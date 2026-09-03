@@ -1,0 +1,20 @@
+{
+  "name": "racers",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "RACERS - design cars from real physical parameters, then race them together.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit -p tsconfig.json && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vite": "^6.0.0",
+    "vitest": "^3.0.0"
+  }
+}
