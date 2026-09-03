@@ -2,7 +2,7 @@
  * Drivetrain — STUB (to be implemented).
  * Gearbox ratios, axle torque split and differential behaviour.
  */
-import type { DiffSpec, DrivetrainSpec } from './types';
+import type { DiffSpec, DrivetrainSpec, EngineSpec } from './types';
 
 /** Overall ratio engine→wheel for a gear index (1-based). 0 (neutral) → 0. */
 export function overallRatio(spec: DrivetrainSpec, gear: number): number {
@@ -38,7 +38,12 @@ export function splitAxleTorque(
   throw new Error('TODO splitAxleTorque');
 }
 
-/** Choose the gear for automatic shifting: upshift near peak power, downshift to keep rpm in the meat of the curve. */
-export function autoShiftGear(spec: DrivetrainSpec, gear: number, rpm: number, throttle: number, peakPowerRpm: number, redlineRpm: number, idleRpm: number): number {
+/**
+ * Choose the gear for automatic shifting. Full throttle: upshift when the next gear would deliver
+ * more wheel torque (or at the limiter); part throttle: upshift earlier. Downshift when rpm drops
+ * far below peak torque and the lower gear would not exceed the limiter. Use hysteresis so it never
+ * hunts. Returns the (possibly unchanged) gear; never 0 while moving forward.
+ */
+export function autoShiftGear(drivetrain: DrivetrainSpec, engine: EngineSpec, gear: number, rpm: number, throttle: number): number {
   throw new Error('TODO autoShiftGear');
 }
