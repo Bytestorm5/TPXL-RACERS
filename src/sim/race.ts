@@ -68,6 +68,12 @@ export interface Race {
   snapshot(): RaceSnapshot;
   /** Skip countdown (tests). */
   start(): void;
+  /**
+   * Put a car back on the track: nearest centreline pose to its current position (or the last on-track
+   * position), zero velocity, upright. Used by the player's reset key and automatically ~2.5 s after a
+   * car is `wrecked` (rolled over) so races always continue.
+   */
+  resetCar(index: number): void;
 }
 
 export function createRace(config: RaceConfig): Race {

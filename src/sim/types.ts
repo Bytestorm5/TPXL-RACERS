@@ -309,6 +309,12 @@ export interface VehicleSpec {
   cgToFront: number;
   /** Yaw moment of inertia (kg·m²). */
   yawInertia: number;
+  /** Roll moment of inertia about body x (kg·m²). Optional; vehicle.ts defaults to mass·(0.32·width)². */
+  rollInertia?: number;
+  /** Pitch moment of inertia about body y (kg·m²). Optional; vehicle.ts defaults to 0.9·yawInertia. */
+  pitchInertia?: number;
+  /** Overall body height above ground (m), for the roof/hull contact used in rollovers. Optional; default 1.3. */
+  height?: number;
   /** Unsprung mass per wheel (kg) — informational for load calc. */
   unsprungMassFront: number;
   unsprungMassRear: number;
@@ -369,6 +375,10 @@ export interface WheelState {
   spinning: boolean;
   /** 0..1+ friction utilisation this step. */
   utilisation: number;
+  /** Suspension compression relative to static ride (m): + = bump (compressed), − = droop. */
+  compression: number;
+  /** Tyre is in contact with the ground this step (strut force > 0). */
+  onGround: boolean;
   surface: SurfaceKind;
   /** World position of the contact patch (for rendering skid marks). */
   x: number;
@@ -390,6 +400,22 @@ export interface VehicleState {
   vy: number;
   /** Yaw rate (rad/s), CCW positive. */
   yawRate: number;
+  /**
+   * Vertical dynamics (the chassis is a 6-DOF rigid body on four spring/damper struts).
+   * Right-hand rule about body axes: pitch > 0 = nose DOWN (rotation about +y/left), roll > 0 = RIGHT side DOWN
+   * (rotation about +x/forward). vz is the world-vertical velocity of the CG.
+   */
+  vz: number;
+  pitch: number;
+  roll: number;
+  pitchRate: number;
+  rollRate: number;
+  /** No wheel is touching the ground (jump / crest launch). */
+  airborne: boolean;
+  /** Seconds spent airborne in the current flight (0 when grounded). */
+  airTime: number;
+  /** Car has rolled onto its side/roof (|roll| or |pitch| beyond the tipping angle); needs a reset. */
+  wrecked: boolean;
   /** Body-frame accelerations this step (m/s²) — for load transfer & telemetry. */
   ax: number;
   ay: number;

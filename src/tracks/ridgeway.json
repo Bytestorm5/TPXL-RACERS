@@ -1,0 +1,219 @@
+{
+  "format": 1,
+  "id": "ridgeway",
+  "name": "Ridgeway Circuit",
+  "author": "RACERS",
+  "description": "A 4.8 km grand-prix circuit over a ridge: downhill esses into a hairpin, a 8-9% concrete climb, a blind crest into a fast kink, a kerbed chicane and a banked final corner. The reference track for analysis and lap-time tests.",
+  "closed": true,
+  "startLine": 200,
+  "ambientTemp": 22,
+  "defaultWidth": 13,
+  "defaultSurface": "asphalt",
+  "defaultShoulder": "grass",
+  "segments": [
+    {
+      "length": 636.46,
+      "name": "Start Straight"
+    },
+    {
+      "length": 157.08,
+      "radius": 100,
+      "turn": "left",
+      "name": "Turn 1"
+    },
+    {
+      "length": 359.01,
+      "grade": [
+        0,
+        -5
+      ],
+      "name": "Descent Approach"
+    },
+    {
+      "length": 157.08,
+      "radius": 200,
+      "turn": "right",
+      "grade": -5,
+      "name": "Esses 1"
+    },
+    {
+      "length": 149.226,
+      "radius": 190,
+      "turn": "left",
+      "grade": -5,
+      "name": "Esses 2"
+    },
+    {
+      "length": 141.372,
+      "radius": 180,
+      "turn": "right",
+      "grade": -5,
+      "name": "Esses 3"
+    },
+    {
+      "length": 133.518,
+      "radius": 170,
+      "turn": "left",
+      "grade": [
+        -5,
+        -3
+      ],
+      "name": "Esses 4"
+    },
+    {
+      "length": 329.01,
+      "grade": [
+        -3,
+        0
+      ],
+      "name": "Valley Straight"
+    },
+    {
+      "length": 69.115,
+      "radius": 22,
+      "turn": "left",
+      "name": "Hairpin",
+      "lanes": [
+        {
+          "span": [
+            5,
+            6.5
+          ],
+          "surface": "curb"
+        }
+      ]
+    },
+    {
+      "length": 120,
+      "grade": [
+        0,
+        8
+      ],
+      "name": "Climb Approach"
+    },
+    {
+      "length": 86.394,
+      "radius": 110,
+      "turn": "right",
+      "grade": 8,
+      "surface": "concrete",
+      "name": "Climb 1"
+    },
+    {
+      "length": 160,
+      "grade": 8.85,
+      "surface": "concrete"
+    },
+    {
+      "length": 78.54,
+      "radius": 100,
+      "turn": "left",
+      "grade": 8,
+      "surface": "concrete",
+      "name": "Climb 2"
+    },
+    {
+      "length": 120,
+      "grade": 8.85
+    },
+    {
+      "length": 94.248,
+      "radius": 120,
+      "turn": "right",
+      "grade": [
+        8,
+        6
+      ],
+      "name": "Climb 3"
+    },
+    {
+      "length": 40,
+      "grade": [
+        6,
+        -6
+      ],
+      "name": "Crest"
+    },
+    {
+      "length": 130.9,
+      "radius": 300,
+      "turn": "left",
+      "grade": [
+        -6,
+        -2
+      ],
+      "name": "Kink"
+    },
+    {
+      "length": 250,
+      "grade": [
+        -2,
+        0
+      ],
+      "name": "Downhill Run"
+    },
+    {
+      "length": 183.26,
+      "radius": 150,
+      "turn": "right",
+      "name": "Sweep"
+    },
+    {
+      "length": 363.54,
+      "name": "Back Straight"
+    },
+    {
+      "length": 34.907,
+      "radius": 50,
+      "turn": "left",
+      "name": "Chicane In",
+      "lanes": [
+        {
+          "span": [
+            5,
+            6.5
+          ],
+          "surface": "curb"
+        }
+      ]
+    },
+    {
+      "length": 34.907,
+      "radius": 50,
+      "turn": "right",
+      "name": "Chicane Out",
+      "lanes": [
+        {
+          "span": [
+            -6.5,
+            -5
+          ],
+          "surface": "curb"
+        }
+      ]
+    },
+    {
+      "length": 313.54
+    },
+    {
+      "length": 125.664,
+      "radius": 80,
+      "turn": "left",
+      "name": "Quarry Corner"
+    },
+    {
+      "length": 40
+    },
+    {
+      "length": 172.788,
+      "radius": 110,
+      "turn": "left",
+      "bank": 6,
+      "name": "Final Corner"
+    },
+    {
+      "length": 336.46,
+      "name": "Pit Straight"
+    }
+  ]
+}

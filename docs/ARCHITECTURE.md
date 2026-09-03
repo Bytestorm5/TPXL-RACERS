@@ -48,9 +48,10 @@ docs/         ARCHITECTURE (this), TRACK_FORMAT, DESIGN_MODEL (build→spec form
 
 1. Read driver input; steer → road-wheel angles (Ackermann, speed-limited lock).
 2. Sample the road under each wheel: surface, grade, bank → gravity components, per-wheel grip.
-3. Wheel loads: static (CG position) + longitudinal transfer (ax·m·h/L) + lateral transfer per axle
-   (ay·m·h/track · axle roll-stiffness share) + aero + bank component. Transfers are first-order lagged
-   by damping ratio (transient balance). Loads ≥ 0; a lifted wheel has no grip.
+3. Wheel loads come from the suspension: each corner's strut compression is the geometric gap between
+   the body corner (from z, pitch, roll) and the ground under that wheel (track height + surface
+   roughness). Strut force = preload + spring·Δ + damper·Δ′ + anti-roll bar + bump stop, clamped ≥ 0.
+   Load transfer, dive, roll, wheel lift, jumps and rollovers are all consequences of this.
 4. Engine: throttle lag → torque at rpm → gearbox → axle split → differential → per-wheel drive torque.
 5. Brakes: pedal × bias → per-wheel torque with temperature effectiveness.
 6. Per wheel: tyre capacity = μ(load, temp, wear, camber, surface)·load. Net torque demand vs

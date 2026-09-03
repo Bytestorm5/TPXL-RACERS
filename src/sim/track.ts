@@ -40,6 +40,10 @@ export interface CompiledTrack extends RoadQuery {
   issues: TrackValidationIssue[];
   /** Start/finish arc-length (m). */
   startLine: number;
+  /** Circuit closure error (m, 3D position) measured BEFORE the blend; 0 for stages. */
+  closureError: number;
+  /** Circuit closure heading mismatch (rad) before the blend; 0 for stages. */
+  closureHeadingError: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -648,19 +652,26 @@ export function compileTrack(spec: TrackSpec): CompiledTrack {
     chord(iNear);
 
     let s = bestS;
-    for (let it = 0; it < 8; it++) {
+    let converged = false;
+    for (let it = 0; it < 12; it++) {
       const c = evalPose(s);
       const dx = x - c.x;
       const dy = y - c.y;
       let ds = dx * Math.cos(c.heading) + dy * Math.sin(c.heading);
-      if (!closed && ((s <= 0 && ds < 0) || (s >= length && ds > 0))) break;
+      if (!closed && ((s <= 0 && ds < 0) || (s >= length && ds > 0))) {
+        converged = true; // clamped at a stage end — that IS the projection
+        break;
+      }
       ds = clamp(ds, -3 * step, 3 * step);
       s = closed ? wrapS(s + ds) : clamp(s + ds, 0, length);
-      if (Math.abs(ds) < 1e-7) break;
+      if (Math.abs(ds) < 1e-6) {
+        converged = true;
+        break;
+      }
     }
-    const refined = finish(s);
-    if (refined.distance * refined.distance <= bestD2 + 1e-6) return refined;
-    return finish(bestS); // iteration diverged (deep inside a hairpin's centre) — keep the chord result
+    // Non-convergence only happens for points with |lateral|·|curvature| >= 1 (at or past
+    // a corner's centre of curvature) where s is ill-defined — keep the chord result there.
+    return converged ? finish(s) : finish(bestS);
   };
 
   const project = (
@@ -808,6 +819,8 @@ export function compileTrack(spec: TrackSpec): CompiledTrack {
     bounds: { minX, minY, maxX, maxY },
     issues,
     startLine,
+    closureError: geo.closureErrorM,
+    closureHeadingError: geo.closureHeadingErr,
     ambientTemp: spec.ambientTemp ?? DEFAULT_AMBIENT_TEMP,
     airDensity: AIR_DENSITY,
   };

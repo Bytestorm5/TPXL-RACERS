@@ -1,0 +1,42 @@
+{
+  "format": 1,
+  "id": "clubsprint",
+  "name": "Clubsprint",
+  "author": "RACERS",
+  "description": "A 1.7 km tight club circuit: second- and third-gear corners, one long-ish straight and a kerbed 180-degree hairpin. Brakes and traction matter far more than peak power.",
+  "closed": true,
+  "startLine": 150,
+  "ambientTemp": 20,
+  "defaultWidth": 10,
+  "defaultSurface": "asphalt",
+  "defaultShoulder": "grass",
+  "segments": [
+    { "length": 300, "name": "Start Straight" },
+    { "length": 54.978, "radius": 35, "turn": "left", "name": "Turn 1" },
+    { "length": 83.75 },
+    { "length": 39.27, "radius": 25, "turn": "left", "name": "Turn 2" },
+    { "length": 275, "name": "Paddock Straight" },
+    { "length": 31.416, "radius": 20, "turn": "right", "name": "Turn 3" },
+    { "length": 93.75 },
+    {
+      "length": 62.832,
+      "radius": 20,
+      "turn": "left",
+      "name": "Hairpin",
+      "lanes": [{ "span": [3.5, 5], "surface": "curb" }]
+    },
+    { "length": 46.25 },
+    { "length": 31.416, "radius": 20, "turn": "right", "name": "Turn 5" },
+    { "length": 195 },
+    { "length": 39.27, "radius": 25, "turn": "left", "name": "Turn 6" },
+    { "length": 136.25 },
+    {
+      "length": 47.124,
+      "radius": 30,
+      "turn": "left",
+      "name": "Turn 7",
+      "lanes": [{ "span": [3.5, 5], "surface": "curb" }]
+    },
+    { "length": 235, "name": "Finish Straight" }
+  ]
+}

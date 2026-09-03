@@ -1,0 +1,33 @@
+{
+  "format": 1,
+  "id": "glacier-loop",
+  "name": "Glacier Loop",
+  "author": "RACERS",
+  "description": "A 2.6 km snow circuit with two ice patches on corner exits and gentle 6-degree banking on the two fast bends. Very low grip: snow tyres and patience required.",
+  "closed": true,
+  "startLine": 150,
+  "ambientTemp": -5,
+  "defaultWidth": 9,
+  "defaultSurface": "snow",
+  "defaultShoulder": "snow",
+  "segments": [
+    { "length": 279.6, "name": "Start Straight" },
+    { "length": 40, "radius": 150, "turn": "left", "bank": [0, 6], "name": "Powder Bend In" },
+    { "length": 155.62, "radius": 150, "turn": "left", "bank": 6, "name": "Powder Bend" },
+    { "length": 40, "radius": 150, "turn": "left", "bank": [6, 0], "name": "Powder Bend Out" },
+    { "length": 60, "surface": "ice", "name": "Powder Exit Ice" },
+    { "length": 222.09 },
+    { "length": 78.54, "radius": 50, "turn": "left", "name": "Cornice" },
+    { "length": 415.4, "name": "Ridge Straight" },
+    { "length": 54.978, "radius": 70, "turn": "right", "shoulder": "sand", "name": "Sastrugi Kink" },
+    { "length": 204.79, "shoulder": "sand" },
+    { "length": 54.978, "radius": 70, "turn": "left", "shoulder": "sand", "name": "Kink Return" },
+    { "length": 94.248, "radius": 60, "turn": "left", "name": "Icefall" },
+    { "length": 50, "surface": "ice", "name": "Icefall Exit Ice" },
+    { "length": 397.91 },
+    { "length": 40, "radius": 160, "turn": "left", "bank": [0, 6], "name": "Glacier Sweep In" },
+    { "length": 171.33, "radius": 160, "turn": "left", "bank": 6, "name": "Glacier Sweep" },
+    { "length": 40, "radius": 160, "turn": "left", "bank": [6, 0], "name": "Glacier Sweep Out" },
+    { "length": 179.6, "name": "Finish Straight" }
+  ]
+}

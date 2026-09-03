@@ -5,11 +5,15 @@ rest. Every simplification we knowingly make lives here so we can revisit it. Ag
 append to the relevant section when you simplify something.
 
 ## Global
-- Planar 3-DOF chassis (vx, vy, yaw). Pitch/roll are not integrated as states; their *effects*
-  (load transfer) are modelled quasi-statically with a first-order lag from damping.
-- Elevation is a property of the road, not a free vertical DOF: cars never leave the ground.
-  Crests reduce load (grade change × speed²), dips add load; no jumps yet.
-- Fixed 120 Hz step, semi-implicit Euler.
+- The chassis is a 6-DOF rigid body (x, y, z, yaw, pitch, roll) resting on four massless
+  spring/damper struts. Load transfer, dive/squat, body roll, jumps (struts reach full droop → no
+  contact → ballistic flight) and rollovers (inner wheels lift, CG passes over the outer contact
+  line) all emerge from that one model. Wheels themselves have no vertical mass (no wheel hop).
+- Euler-angle attitude with small-angle rate integration; accuracy degrades past ~45° of roll/pitch,
+  which only happens while crashing. Past the tipping angle the body is treated as a box whose
+  eight corners collide with the ground (penalty springs), so a rollover tumbles and settles; the car
+  is then `wrecked` and reset.
+- Fixed 120 Hz step with internal 240 Hz substeps, semi-implicit Euler.
 - No fuel consumption effects on mass mid-race, no engine temperature, no damage.
 
 ## Tyres
