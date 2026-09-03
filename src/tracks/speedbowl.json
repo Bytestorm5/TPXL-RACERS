@@ -1,0 +1,23 @@
+{
+  "format": 1,
+  "id": "speedbowl",
+  "name": "Speedbowl",
+  "author": "RACERS",
+  "description": "A 2.4 km superspeedway oval with two 180-degree turns banked at 24 degrees. Wide, fast and simple: tests banking, aero drag and top speed.",
+  "closed": true,
+  "startLine": 400,
+  "ambientTemp": 27,
+  "defaultWidth": 16,
+  "defaultSurface": "asphalt",
+  "defaultShoulder": "grass",
+  "segments": [
+    { "length": 508.85, "name": "Front Straight" },
+    { "length": 60, "radius": 220, "turn": "left", "bank": [0, 24], "name": "Turn 1 Entry" },
+    { "length": 571.15, "radius": 220, "turn": "left", "bank": 24, "name": "Turn 1" },
+    { "length": 60, "radius": 220, "turn": "left", "bank": [24, 0], "name": "Turn 1 Exit" },
+    { "length": 508.85, "name": "Back Straight" },
+    { "length": 60, "radius": 220, "turn": "left", "bank": [0, 24], "name": "Turn 2 Entry" },
+    { "length": 571.15, "radius": 220, "turn": "left", "bank": 24, "name": "Turn 2" },
+    { "length": 60, "radius": 220, "turn": "left", "bank": [24, 0], "name": "Turn 2 Exit" }
+  ]
+}
