@@ -63,6 +63,11 @@ export interface RaceConfig {
   seed?: number;
   /** Enable car-to-car collisions (default true). */
   collisions?: boolean;
+  /**
+   * Start with tyres and brakes at working temperature (formation-lap simplification; default true).
+   * When false, tyres start at ambient and cold compounds are treacherous on lap 1.
+   */
+  preheatTyres?: boolean;
 }
 
 export interface CarTiming {
