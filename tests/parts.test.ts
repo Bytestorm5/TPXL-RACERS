@@ -198,7 +198,7 @@ describe('FIELD_RANGES', () => {
     expect(FIELD_RANGES['engine.redline']).toMatchObject({ min: 4500, max: 11000 });
     expect(FIELD_RANGES['drivetrain.gears']).toMatchObject({ min: 3, max: 8 });
     expect(FIELD_RANGES['brakes.discFront']).toMatchObject({ min: 240, max: 420 });
-    expect(FIELD_RANGES['brakes.bias']).toMatchObject({ min: 0.4, max: 0.85 });
+    expect(FIELD_RANGES['brakes.bias']).toMatchObject({ min: 0.5, max: 0.9, step: 0.005 });
     expect(FIELD_RANGES['suspension.steeringLock']).toMatchObject({ min: 20, max: 60 });
   });
 });
@@ -214,7 +214,7 @@ describe('defaultBuild', () => {
     expect(b.engine.aspiration).toBe('na');
     expect(b.tires.front.compound).toBe('sport');
     expect(b.brakes.abs).toBe(true);
-    expect(b.brakes.bias).toBeCloseTo(0.64, 9);
+    expect(b.brakes.bias).toBeCloseTo(0.705, 9); // balanced under the bias-bar semantics (autoTune output)
     expect(b.drivetrain.rearDiff).toBe('lsd_1way');
     expect(b.drivetrain.gearbox).toBe('auto');
   });
@@ -275,7 +275,7 @@ describe('presetBuilds', () => {
     expect(drift.tires.rear.compound).toBe('drift');
     expect(drift.suspension.steeringLock).toBeGreaterThanOrEqual(50);
     expect(drift.brakes.abs).toBe(false);
-    expect(drift.brakes.bias).toBeCloseTo(0.7, 9);
+    expect(drift.brakes.bias).toBeCloseTo(0.72, 9); // 0.02 more rearward than balanced (0.74): drift cars like a loose rear
 
     const muscle = byName.get('Muscle')!;
     expect(muscle.chassis.size).toBe('large');

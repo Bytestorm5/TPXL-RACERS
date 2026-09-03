@@ -120,17 +120,33 @@ describe('analyzeBuild — sanity on the default build and every preset', () => 
 
 // ---------------------------------------------------------------------------
 
-describe('brakes — proportioning valve, lockup sweep, thermal test', () => {
-  it('line pressures follow the proportioning-valve semantics', () => {
-    expect(brakeLinePressures(0.5)).toEqual({ front: 1, rear: 1 });
-    expect(brakeLinePressures(0.64).front).toBe(1);
-    expect(brakeLinePressures(0.64).rear).toBeCloseTo(0.72, 9);
-    expect(brakeLinePressures(0.4).front).toBeCloseTo(0.8, 9);
-    expect(brakeLinePressures(0.4).rear).toBe(1);
+describe('brakes — bias bar, lockup sweep, thermal test', () => {
+  it('line pressures follow the bias-bar semantics: front share of total torque = bias, stronger side at full pressure', () => {
+    expect(brakeLinePressures(0.5, 3000, 3000)).toEqual({ front: 1, rear: 1 });
+    const p = brakeLinePressures(0.75, 3000, 3000);
+    expect(p.front).toBe(1);
+    expect(p.rear).toBeCloseTo(1 / 3, 9);
+    for (const [bias, mF, mR] of [
+      [0.6, 2688, 2520],
+      [0.7, 2000, 3500],
+      [0.45, 3000, 2000],
+      [0.9, 2500, 2500],
+      [0.3, 2500, 2500],
+    ]) {
+      const q = brakeLinePressures(bias, mF, mR);
+      expect(Math.max(q.front, q.rear)).toBeCloseTo(1, 12);
+      expect(Math.min(q.front, q.rear)).toBeGreaterThanOrEqual(0);
+      const share = (mF * q.front) / (mF * q.front + mR * q.rear);
+      expect(share, `bias ${bias}`).toBeCloseTo(bias, 9);
+    }
+    // guards: NaN bias → neutral, missing rear brakes → all front
+    expect(brakeLinePressures(NaN, 3000, 3000)).toEqual({ front: 1, rear: 1 });
+    expect(brakeLinePressures(0.7, 3000, 0)).toEqual({ front: 1, rear: 0 });
+    expect(brakeLinePressures(1, 3000, 3000)).toEqual({ front: 1, rear: 0 });
   });
 
-  it('bias 0.3 → the rear locks first (danger, fix brakeBias); bias 0.9 → front locks far earlier (warning)', () => {
-    const rear = analyze(build((b) => (b.brakes.bias = 0.3)));
+  it('bias 0.5 → the rear locks first (danger, fix brakeBias); bias 0.9 → front locks far earlier (warning)', () => {
+    const rear = analyze(build((b) => (b.brakes.bias = 0.5)));
     expect(rear.metrics.lockupAxle).toBe('rear');
     const danger = rear.warnings.find((w) => w.severity === 'danger' && w.area === 'brakes');
     expect(danger).toBeDefined();
@@ -145,14 +161,34 @@ describe('brakes — proportioning valve, lockup sweep, thermal test', () => {
     expect(front.metrics.lockupRearUtilisation!).toBeLessThan(0.85);
   });
 
+  it('the default build and every preset are brake-balanced out of the box (Drift Missile deliberately rear-first)', () => {
+    for (const b of allBuilds()) {
+      const a = analyze(b);
+      if (b.name === 'Drift Missile') {
+        expect(a.metrics.lockupAxle).toBe('rear');
+        const w = a.warnings.find((x) => x.area === 'brakes' && x.fix === 'brakeBias');
+        expect(w).toBeDefined();
+        expect(w!.severity).toBe('warning'); // drift tyres: a loose rear under braking is a tool, not a fault
+        expect(w!.message).toMatch(/drift/i);
+      } else {
+        expect(a.metrics.lockupAxle, b.name).toBe('balanced');
+        expect(a.warnings.some((x) => x.severity === 'danger' && x.area === 'brakes'), b.name).toBe(false);
+      }
+    }
+  });
+
   it('lockupG peaks near the balanced bias and falls off on either side', () => {
     const g = (bias: number) => analyze(build((b) => (b.brakes.bias = bias))).metrics.lockupG;
     const balanced = analyzeLockup(compileBuild(build())).idealG;
-    const best = Math.max(g(0.5), g(0.6), g(0.7), g(0.75), g(0.8), g(0.85));
+    const best = Math.max(g(0.5), g(0.6), g(0.7), g(0.75), g(0.8), g(0.85), g(0.9));
     expect(best).toBeGreaterThan(0.9 * balanced);
     expect(g(0.5)).toBeLessThan(best);
-    expect(g(0.85)).toBeLessThan(best);
-    expect(g(0.4)).toBeLessThan(g(0.7));
+    expect(g(0.9)).toBeLessThan(best);
+    expect(g(0.5)).toBeLessThan(g(0.7));
+    // bias-bar: the default's stock bias (0.705) is the front's share of the tyre capacity at the limit
+    const ideal = analyzeLockup(compileBuild(build()));
+    expect(Math.abs(ideal.utilFront - ideal.utilRear)).toBeLessThan(0.05);
+    expect(ideal.utilFront).toBeGreaterThanOrEqual(ideal.utilRear);
   });
 
   it('without ABS a stomp locks an axle and stops longer than with ABS', () => {

@@ -61,8 +61,14 @@ shifts per sweep on a 4.2/2.2/1.4/1.0/0.8 box). Brakes were verified unchanged.
 - `absorbedPower` = `brakeTorque × |wheelOmega|` (W) of the torque **actually reacted by the disc**.
   For a locked wheel (omega ≈ 0) pass 0 — that energy goes into the tyre.
 - Call `updateBrakeState` once per wheel per step with the car's ground speed (m/s, sign ignored).
-- `brakeTorque` uses `state.temp` of the same wheel; bias is applied by the caller
-  (`pedal_front = pedal × bias`, `pedal_rear = pedal × (1 − bias)` per `VehicleSpec.brakes.bias`).
+- `brakeTorque` uses `state.temp` of the same wheel; bias is applied by the caller as a **bias bar**:
+  `VehicleSpec.brakes.bias` is the front share of the *total* brake torque. With `mF`/`mR` the axles'
+  `maxTorque` and `neutral = mF/(mF + mR)`: if `bias ≥ neutral` the front gets full line pressure and
+  `pressure_rear = ((1 − bias)/bias) × mF/mR`; otherwise the rear gets full pressure and
+  `pressure_front = (bias/(1 − bias)) × mR/mF`. Per-wheel torque = `maxTorque × pedal × pressure ×
+  effectiveness(temp)`, so the front share equals `bias` exactly (at equal pad temperatures) and the
+  stronger side always sees the full pedal. `design/analyze.ts` exports `brakeLinePressures(bias, mF,
+  mR)` with the identical rule; the vehicle model carries its own copy (the designer never imports the sim).
 
 ## Drivetrain
 

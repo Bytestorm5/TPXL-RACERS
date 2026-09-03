@@ -233,7 +233,7 @@ describe('compileBuild — brakes', () => {
 
   it('bias, ABS and handbrake pass through', () => {
     const spec = compileBuild(build());
-    expect(spec.brakes.bias).toBeCloseTo(0.64, 9);
+    expect(spec.brakes.bias).toBeCloseTo(build().brakes.bias, 9);
     expect(spec.brakes.abs).toBe(true);
     expect(spec.brakes.handbrakeTorque).toBeCloseTo(0.45 * spec.brakes.rear.maxTorque, 6);
     expect(spec.brakes.wheelInertiaFront).toBeGreaterThan(0.5);
@@ -401,7 +401,7 @@ describe('normalizeBuild', () => {
     expect(n.tires.front.pressure).toBe(320);
     expect(n.tires.rear.camber).toBe(-6);
     expect(n.suspension.springFront).toBe(250);
-    expect(n.brakes.bias).toBe(0.4);
+    expect(n.brakes.bias).toBe(0.5);
     expect(n.chassis.fuel).toBe(10);
     expect(n.engine.redline).toBe(11000);
   });

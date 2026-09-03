@@ -53,7 +53,7 @@ function randomBuild(seed: number): CarBuild {
 
 describe('autoTune — contract', () => {
   it('returns a normalised copy, never mutates the input, and every change is truthful', () => {
-    const b = build((x) => (x.brakes.bias = 0.3));
+    const b = build((x) => (x.brakes.bias = 0.5));
     const snap = JSON.stringify(b);
     const res = autoTune(b, 'all');
     expect(JSON.stringify(b)).toBe(snap);
@@ -75,8 +75,10 @@ describe('autoTune — contract', () => {
   });
 
   it('snapToRange rounds onto the slider grid and clamps', () => {
-    expect(snapToRange('brakes.bias', 0.7749)).toBeCloseTo(0.77, 9);
-    expect(snapToRange('brakes.bias', 0.99)).toBeCloseTo(0.85, 9);
+    expect(snapToRange('brakes.bias', 0.7749)).toBeCloseTo(0.775, 9);
+    expect(snapToRange('brakes.bias', 0.7724)).toBeCloseTo(0.77, 9);
+    expect(snapToRange('brakes.bias', 0.99)).toBeCloseTo(0.9, 9);
+    expect(snapToRange('brakes.bias', 0.2)).toBeCloseTo(0.5, 9);
     expect(snapToRange('tires.front.pressure', 151.9)).toBe(150);
     expect(snapToRange('tires.front.pressure', NaN)).toBe(120);
   });
@@ -86,7 +88,7 @@ describe('autoTune — contract', () => {
 
 describe('autoTune — brakeBias', () => {
   it('makes lockup balanced with lockupG within 4 % of the best achievable', () => {
-    for (const start of [0.4, 0.64, 0.85]) {
+    for (const start of [0.5, 0.7, 0.9]) {
       const res = autoTune(build((x) => (x.brakes.bias = start)), 'brakeBias');
       const spec = compileBuild(res.build);
       const l = analyzeLockup(spec);
@@ -117,17 +119,14 @@ describe('autoTune — brakeBias', () => {
     expect(neutral.utilRear / neutral.utilFront).toBeGreaterThan(AUTOTUNE.brakeRearUtilisation - 0.03);
   });
 
-  it('shrinks oversized rear discs when the bias range alone cannot stop rear lockup', () => {
-    const b = build((x) => {
-      x.brakes.discFront = 240;
-      x.brakes.discRear = 370;
-      x.brakes.bias = 0.5;
-    });
-    const res = autoTune(b, 'brakeBias');
-    const a = analyze(res.build);
-    expect(a.metrics.lockupAxle).not.toBe('rear');
-    expect(res.build.brakes.discRear).toBeLessThan(370);
-    expect(res.changes.some((c) => c.field === 'brakes.discRear')).toBe(true);
+  it('bias bar: the balanced bias is the capacity share, independent of disc sizes', () => {
+    const small = autoTune(build((x) => Object.assign(x.brakes, { discFront: 240, discRear: 370, bias: 0.5 })), 'brakeBias').build.brakes.bias;
+    const stock = autoTune(build(), 'brakeBias').build.brakes.bias;
+    expect(Math.abs(small - stock)).toBeLessThanOrEqual(0.015);
+    // and it tracks the dynamic front load share: a taller car (more transfer) wants more front bias
+    const tall = autoTune(build((x) => Object.assign(x.suspension, { rideHeightFront: 220, rideHeightRear: 220 })), 'brakeBias').build.brakes.bias;
+    const low = autoTune(build((x) => Object.assign(x.suspension, { rideHeightFront: 50, rideHeightRear: 50 })), 'brakeBias').build.brakes.bias;
+    expect(tall).toBeGreaterThan(low);
   });
 });
 

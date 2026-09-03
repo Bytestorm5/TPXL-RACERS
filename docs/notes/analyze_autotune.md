@@ -1,6 +1,6 @@
 # Notes — build analysis + auto-tune (`src/design/analyze.ts`, `src/design/autotune.ts`)
 
-Executable spec: `tests/analyze.test.ts` (30), `tests/autotune.test.ts` (18). Both modules are pure,
+Executable spec: `tests/analyze.test.ts` (31), `tests/autotune.test.ts` (18). Both modules are pure,
 deterministic (no RNG anywhere), allocation-light and never return NaN for the default build, the
 seven presets or 20 seeds of fully randomised continuous fields. `analyzeBuild` runs in 0.8–3.1 ms
 per call (test budget 5 ms, averaged over 20 calls); `autoTune('all')` takes 5–15 ms.
@@ -19,11 +19,14 @@ pads); aero balance and downforce at 200 km/h; repeated-stop test: 10 stops from
 
 ## Semantics assumed (must match `vehicle.ts`)
 
-- **Brake bias is a proportioning valve**: front line pressure `min(1, 2·bias)`, rear
-  `min(1, 2·(1 − bias))`; per-wheel torque = `axleSpec.maxTorque × pressure × effectiveness(temp)`;
-  axle force demand = `2 × torque / radius`. Consequence worth knowing: with equal discs a bias of
-  0.5 means *equal* torque both ends, so the balance point of every road car is ~0.75–0.82 (see
-  "Open issues").
+- **Brake bias is a bias bar**: `spec.brakes.bias` is the front share of the *total* brake torque.
+  With `mF`/`mR` the axles' `maxTorque` and `neutral = mF/(mF + mR)`: `bias ≥ neutral` → front line
+  pressure 1, rear `((1 − bias)/bias)·mF/mR`; else rear 1, front `(bias/(1 − bias))·mR/mF`. Per-wheel
+  torque = `maxTorque × pedal × pressure × effectiveness(temp)`; axle force demand = `2 × torque /
+  radius`. So the front share equals `bias` exactly (at equal pad temperatures), the stronger side always
+  sees the full pedal, and the balanced bias is simply the front axle's share of the tyre capacity at the
+  braking limit — the disc sizes drop out of the balance and only set how hard the car can stop.
+  `brakeLinePressures(bias, mF, mR)` is exported; `sim/vehicle.ts` carries an identical copy.
 - **Longitudinal transfer** `dF = Fx_total × cgHeight / wheelbase` where `Fx_total` is the sum of the
   tyre forces (drag does not enter the transfer).
 - **Lateral transfer per axle**
@@ -57,7 +60,9 @@ pads); aero balance and downforce at 200 km/h; repeated-stop test: 10 stops from
 
 ## Warnings (severity / area / fix)
 
-Every message names the physical cause and the knobs. Rear locks first → **danger** brakes `brakeBias`.
+Every message names the physical cause and the knobs. Rear locks first → **danger** brakes `brakeBias`
+(downgraded to warning on drift-compound rear tyres, where a rear that locks first is a slide-initiation
+tool — the Drift Missile preset is deliberately 0.02 rearward of balanced).
 Front locks with the rear below 85 % utilisation → warning `brakeBias`. Brakes too weak to lock →
 info. Disc hotter than `fadeStartTemp` after ten stops → warning, **danger** below 75 % effectiveness
 (no solver: ducts / discs / pads named). `coldFactor < 0.8` → info. `tractionUse1stGear > 1.6` →
@@ -78,12 +83,12 @@ Works on a `normalizeBuild` copy; every change records `field`, `from`, `to`, on
 repeated changes to a field are merged (first `from`, last `to`). All solvers read compiled
 quantities and search numerically against `compileBuild` — none re-derives a compile formula.
 
-- **brakeBias** — bisection over the bias range on `analyzeLockup` for rear/front utilisation =
-  0.98 (2 % toward the front for safety; 1.0 for `drift`). The 0.01 slider grid is coarser than the
-  4 % balanced window near bias 0.8 (one step ≈ 5 % of rear pressure), so both grid neighbours are
-  evaluated and a *balanced* one is kept (front-first preferred). If the bias pins at 0.85 with the
-  rear still locking first, the rear disc is reduced (torque is linear in diameter) so the balance
-  point lands at bias ≈ 0.8, and the bias is solved again.
+- **brakeBias** — bisection over the bias range (0.5–0.9, step 0.005) on `analyzeLockup` for
+  rear/front utilisation = 0.98 (2 % toward the front for safety; 1.0 for `drift`). One grid step is
+  ~2 % of the rear torque near 0.75, so both grid neighbours of the root are evaluated and a *balanced*
+  one is kept (front-first preferred). Under the bias-bar semantics the result is the dynamic front
+  capacity share at the limit: 0.70–0.75 for the road-car presets, 0.635 for the low, rear-heavy Track
+  Weapon; it does not depend on disc sizes (tested).
 - **gears** — `overallTop = limiter × r / (1.04 × v_drag)`, `overallFirst = 1.25 × cap_0.5g × r /
   (peakTorque × eff)` (at least 1.8 × overallTop); the final drive is moved only when needed to put
   both ratios inside their ranges (top speed wins if both cannot fit); explicit geometric
@@ -119,20 +124,31 @@ quantities and search numerically against `compileBuild` — none re-derives a c
 - The understeer gradient is a documented blend (above), not a linear-range measurement; its
   20 deg/g limit gain is a calibration choice, not physics.
 
+## Brake bias semantics change (2026-09-03) and preset re-balance
+
+The proportioning-valve semantics of the first version were replaced by the bias bar above (decision
+by the coordinator; the vehicle model implements the same rule). `FIELD_RANGES['brakes.bias']` is now
+0.5–0.9 in 0.005 steps and every curated build carries the value `autoTune(build, 'brakeBias')`
+produces, so the presets are balanced out of the box:
+
+| Build | old bias | new bias | note |
+| --- | --- | --- | --- |
+| Roadster S (default) | 0.64 | 0.705 | balanced, front first by 2 % |
+| Club Hatch | 0.68 | 0.745 | |
+| Track Weapon | 0.60 | 0.635 | balanced (low CG, 43 % front: little transfer) |
+| Gravel Rally | 0.60 | 0.74 | |
+| Drift Missile | 0.70 | 0.72 | balanced would be 0.74; 0.02 rearward on purpose (rear locks first → warning, not danger) |
+| Muscle | 0.66 | 0.745 | |
+| Kei Racer | 0.66 | 0.745 | |
+| Ice Runner | 0.60 | 0.725 | |
+
 ## Open issues for the integrator
 
-1. **Preset brake biases vs the valve semantics.** With the specified proportioning-valve model the
-   default build and *every* preset lock the rear first at their stock bias (0.60–0.70; e.g. default
-   0.64 → rear locks at 0.78 g while the front is at 73 %). `docs/notes/brakes_drivetrain.md`
-   describes a different convention (`pedal_front = pedal × bias`, `pedal_rear = pedal × (1 − bias)`)
-   under which those presets are nearly balanced. Either the presets should move to ~0.78–0.82 (what
-   `autoTune('brakeBias')` produces) or vehicle.ts should confirm which convention it implements; the
-   analysis follows the task brief (valve) and is one constant away from the other.
-2. The 0.01 bias slider step is coarse where it matters (rear line pressure ~0.3–0.4); a 0.005
-   step would let the solver honour the 2 % safety margin exactly.
-3. The bump-stop constant in `jumpLandingG` should be aligned with vehicle.ts once its strut model
+1. The bump-stop constant in `jumpLandingG` should be aligned with vehicle.ts once its strut model
    is final.
-4. `BuildAnalysis.metrics` gained optional fields (`rolloverG`, `jumpLandingG`, `limitBalance`,
+2. `BuildAnalysis.metrics` gained optional fields (`rolloverG`, `jumpLandingG`, `limitBalance`,
    `limitAxle`, `skidpadFrontG/RearG`, `understeerLinear/Slip/LimitDegPerG`,
    `topSpeedDragLimitedKmh`, `topSpeedGearingLimited`, `firstGearLimiterKmh`, `brakeHotAxle`,
    `lockupFront/RearUtilisation`, `lapTimeEstimateS`) — the UI must treat them as optional.
+3. `brakeLinePressures` exists twice by design (design/analyze.ts and sim/vehicle.ts); a shared
+   sim-side helper the designer may import would remove the duplication if the layering rule is relaxed.

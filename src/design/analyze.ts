@@ -1003,10 +1003,14 @@ export function analyzeBuild(build: CarBuild, spec: VehicleSpec): BuildAnalysis 
   // ---------------------------------------------------------------- brakes
   const hotSpec = thermal.hotAxle === 'front' ? spec.brakes.front : spec.brakes.rear;
   if (lockup.canLock && lockup.lockupAxle === 'rear') {
+    const driftRear = build.tires.rear.compound === 'drift';
+    const cause = `The rear brakes lock before the fronts (at ${fmt(lockup.lockupG)} g the rear axle is at ${pct(lockup.utilRear)} of its grip while the front is only at ${pct(lockup.utilFront)}). Braking throws weight onto the front tyres, so the unloaded rears give up first`;
     warn(
-      'danger',
+      driftRear ? 'warning' : 'danger',
       'brakes',
-      `The rear brakes lock before the fronts (at ${fmt(lockup.lockupG)} g the rear axle is at ${pct(lockup.utilRear)} of its grip while the front is only at ${pct(lockup.utilFront)}). Braking throws weight onto the front tyres, so the unloaded rears give up first and the car can swap ends${spec.brakes.abs ? ' — even with ABS the rear is doing too much of the work' : ''}. Move the brake bias forward.`,
+      driftRear
+        ? `${cause}. On drift tyres that is a tool — a dab of brake unsettles the rear to start a slide — but it will spin the car in a straight-line stop. Move the brake bias forward if you want to stop straight.`
+        : `${cause} and the car can swap ends${spec.brakes.abs ? ' — even with ABS the rear is doing too much of the work' : ''}. Move the brake bias forward.`,
       'brakeBias',
     );
   } else if (lockup.canLock && lockup.lockupAxle === 'front' && lockup.utilRear < 0.85) {
