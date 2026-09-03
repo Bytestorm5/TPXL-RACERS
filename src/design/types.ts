@@ -192,6 +192,10 @@ export interface BuildAnalysis {
     skidpadRearG?: number;
     /** Linear-range part of the understeer gradient (deg/g), from cornering stiffness per load only. */
     understeerLinearDegPerG?: number;
+    /** Slip-angle part of the understeer gradient (deg/g) at 90 % of the limit, from the tyre curves. */
+    understeerSlipDegPerG?: number;
+    /** Limit part of the understeer gradient (deg/g): how much earlier the front axle saturates. */
+    understeerLimitDegPerG?: number;
     /** Ideal (CVT) drag-limited top speed (km/h): what the gearing could reach at best. */
     topSpeedDragLimitedKmh?: number;
     /** True when the top speed is set by the rev limiter in top gear rather than by drag. */

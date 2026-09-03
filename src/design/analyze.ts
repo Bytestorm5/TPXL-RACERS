@@ -58,8 +58,10 @@ export const ANALYSIS = {
   clutchSpeed: 4,
   /** Manual gearbox launch: shift at this fraction of the limiter. */
   manualShiftFraction: 0.97,
-  /** Understeer gradient is measured at this fraction of the balanced skidpad limit. */
+  /** Understeer gradient: slip-angle term measured at this fraction of the balanced skidpad limit ... */
   understeerReference: 0.9,
+  /** ... plus limitBalance × this (deg/g): a 5 % earlier front limit reads as +1 deg/g of understeer. */
+  understeerLimitGain: 20,
   /** Lockup is 'balanced' when both axles are within this utilisation of each other at first lockup. */
   balancedLockupTolerance: 0.04,
   /** Traction-use metric: longitudinal transfer evaluated at this acceleration (g). */
@@ -263,10 +265,14 @@ export interface HandlingAnalysis {
   limitAxle: 'front' | 'rear';
   /** (ayRear − ayFront)/max: > 0 the front gives up first (limit understeer). */
   limitBalance: number;
-  /** Total understeer gradient (deg/g), positive = understeer. */
+  /** Total understeer gradient (deg/g), positive = understeer: slip-angle term + limit term. */
   understeerGradientDegPerG: number;
   /** Linear-range part: rad2deg(1/csF − 1/csR) — the closed form of Wf/Cf − Wr/Cr with C = cs × W. */
   understeerLinearDegPerG: number;
+  /** Slip-angle term (deg/g): (αfront − αrear)/ay at the reference lateral acceleration, from the tyre curves. */
+  understeerSlipDegPerG: number;
+  /** Limit term (deg/g): understeerLimitGain × limitBalance — how much earlier the front axle saturates. */
+  understeerLimitDegPerG: number;
   /** Slip angles (deg) each axle needs at the reference lateral acceleration. */
   slipFrontDeg: number;
   slipRearDeg: number;
@@ -362,7 +368,9 @@ export function analyzeHandling(spec: VehicleSpec): HandlingAnalysis {
   const out = createTireOutput();
   const alphaF = axleSlipAngle(spec.tires.front, loads.frontOuter, loads.frontInner, mF * ayRef, input, out);
   const alphaR = axleSlipAngle(spec.tires.rear, loads.rearOuter, loads.rearInner, mR * ayRef, input, out);
-  const understeer = ayRef > 1e-6 ? rad2deg(alphaF - alphaR) / (ayRef / G) : 0;
+  const understeerSlip = ayRef > 1e-6 ? rad2deg(alphaF - alphaR) / (ayRef / G) : 0;
+  const understeerLimit = ANALYSIS.understeerLimitGain * limitBalance;
+  const understeer = understeerSlip + understeerLimit;
   const csF = spec.tires.front.corneringStiffnessPerLoad > 0 ? spec.tires.front.corneringStiffnessPerLoad : 1;
   const csR = spec.tires.rear.corneringStiffnessPerLoad > 0 ? spec.tires.rear.corneringStiffnessPerLoad : 1;
   const understeerLinear = rad2deg(1 / csF - 1 / csR);
@@ -384,6 +392,8 @@ export function analyzeHandling(spec: VehicleSpec): HandlingAnalysis {
     limitBalance: finite(limitBalance, 0),
     understeerGradientDegPerG: finite(understeer, 0),
     understeerLinearDegPerG: finite(understeerLinear, 0),
+    understeerSlipDegPerG: finite(understeerSlip, 0),
+    understeerLimitDegPerG: finite(understeerLimit, 0),
     slipFrontDeg: finite(rad2deg(alphaF), 0),
     slipRearDeg: finite(rad2deg(alphaR), 0),
     referenceG: finite(ayRef / G, 0),
@@ -552,8 +562,10 @@ export function simulateStop(
       if (threshold) {
         const u = Math.max(capF > 0 ? demandF / capF : 0, capR > 0 ? demandR / capR : 0);
         if (u > 1) {
-          demandF /= u;
-          demandR /= u;
+          // ideal driver: ease the pedal so the first axle sits just under its limit
+          const k = u * (1 + 1e-6);
+          demandF /= k;
+          demandR /= k;
         }
       }
       // front
@@ -1210,6 +1222,8 @@ export function analyzeBuild(build: CarBuild, spec: VehicleSpec): BuildAnalysis 
       skidpadFrontG: handling.ayFrontG,
       skidpadRearG: handling.ayRearG,
       understeerLinearDegPerG: handling.understeerLinearDegPerG,
+      understeerSlipDegPerG: handling.understeerSlipDegPerG,
+      understeerLimitDegPerG: handling.understeerLimitDegPerG,
       topSpeedDragLimitedKmh: launch.topSpeedDragLimitedKmh,
       topSpeedGearingLimited: launch.gearingLimited,
       firstGearLimiterKmh: launch.firstGearLimiterKmh,
