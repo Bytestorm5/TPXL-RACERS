@@ -26,7 +26,8 @@
  *  - Order: finished cars first by finish time, then by progress descending (ties by index).
  *  - `resetCar(i)`: nearest centreline pose to the car (or the last on-track s when it is far off),
  *    `resetVehicleState` (keeps tyre / brake temperatures and wear), zero input. Called automatically
- *    2.5 s after a car becomes `wrecked`; counted in `timing.resets`.
+ *    2.5 s after a car becomes `wrecked` and 3 s after it strays more than 40 m beyond the track edge
+ *    (there is no scenery: the world ends there); counted in `timing.resets`.
  *
  * Deterministic: no RNG; the substep sequence only depends on the inputs (and, for AI, the seed).
  * See docs/notes/race.md for the timing rules, the collision model and the simplifications.
@@ -159,6 +160,13 @@ export const COUNTDOWN_S = 3;
 export const MAX_SUBSTEPS = 8;
 /** A wrecked car is put back on the road after this long (s). */
 export const WRECK_RESET_DELAY = 2.5;
+/**
+ * A car farther than this beyond the track edge (m) for OFF_WORLD_DELAY seconds is put back on the
+ * road: there is no scenery to stop it, and a car a kilometre away makes every road query a global
+ * search (frame-rate cliff), so the world effectively ends here.
+ */
+export const OFF_WORLD_DISTANCE = 40;
+export const OFF_WORLD_DELAY = 3;
 /** Collision circle radius = width/2 + this (m). */
 export const COLLISION_RADIUS_MARGIN = 0.1;
 /** Normal restitution of car-to-car contacts. */
@@ -247,6 +255,8 @@ interface CarInternal {
   lastOnTrackS: number;
   /** Seconds spent wrecked (auto-reset watchdog). */
   wreckTimer: number;
+  /** Seconds spent beyond OFF_WORLD_DISTANCE from the track edge. */
+  offWorldTimer: number;
   /** Lap time at the last recorded sector boundary (s). */
   sectorAcc: number;
   /** State to restore when the car reverses back over the line after a crossing. */
@@ -344,6 +354,7 @@ class RaceImpl implements Race {
         pendingStart: false,
         lastOnTrackS: 0,
         wreckTimer: 0,
+        offWorldTimer: 0,
         sectorAcc: 0,
         undo: null,
         others: [],
@@ -443,6 +454,7 @@ class RaceImpl implements Race {
     zeroInput(car.input);
     car.lastImpact = 0;
     it.wreckTimer = 0;
+    it.offWorldTimer = 0;
     it.lastS = s;
     const tm = car.timing;
     tm.resets = (tm.resets ?? 0) + 1;
@@ -523,13 +535,22 @@ class RaceImpl implements Race {
     }
     this.finished = allDone;
 
-    // 5. wreck watchdog
+    // 5. watchdogs: rolled-over cars and cars that left the world
     for (let i = 0; i < n; i++) {
       const it = this.internals[i];
-      if (cars[i].state.wrecked) {
+      const st = cars[i].state;
+      if (st.wrecked) {
         it.wreckTimer += SIM_DT;
-        if (it.wreckTimer >= WRECK_RESET_DELAY - 1e-9) this.resetCar(i);
+        if (it.wreckTimer >= WRECK_RESET_DELAY - 1e-9) {
+          this.resetCar(i);
+          continue;
+        }
       } else it.wreckTimer = 0;
+      const road = st.road;
+      if (Math.abs(road.lateral) - road.halfWidth > OFF_WORLD_DISTANCE) {
+        it.offWorldTimer += SIM_DT;
+        if (it.offWorldTimer >= OFF_WORLD_DELAY - 1e-9) this.resetCar(i);
+      } else it.offWorldTimer = 0;
     }
   }
 
