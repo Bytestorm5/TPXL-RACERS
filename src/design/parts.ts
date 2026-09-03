@@ -314,11 +314,11 @@ export const TIRE_COMPOUNDS: Record<TireCompoundId, TireCompoundData> = {
 
 /** baseMass is the bare steel chassis + body + interior; the total car adds engine, drivetrain, wheels, brakes, driver (80 kg) and fuel. */
 export const CHASSIS_SIZES: Record<ChassisSize, ChassisSizeData> = {
-  kei:     { label: 'Kei',        wheelbase: 2.4,  track: 1.35, length: 3.4, width: 1.48, baseMass: 620,  frontalArea: 1.9,  cgHeight: 0.5 },
-  compact: { label: 'Compact',    wheelbase: 2.55, track: 1.5,  length: 4.2, width: 1.75, baseMass: 900,  frontalArea: 2.05, cgHeight: 0.52 },
-  mid:     { label: 'Mid-size',   wheelbase: 2.7,  track: 1.56, length: 4.6, width: 1.85, baseMass: 1080, frontalArea: 2.2,  cgHeight: 0.53 },
-  large:   { label: 'Large',      wheelbase: 2.9,  track: 1.62, length: 4.9, width: 1.95, baseMass: 1300, frontalArea: 2.35, cgHeight: 0.55 },
-  truck:   { label: 'Truck',      wheelbase: 3.2,  track: 1.7,  length: 5.4, width: 2.05, baseMass: 1800, frontalArea: 3.0,  cgHeight: 0.75 },
+  kei:     { label: 'Kei',        wheelbase: 2.4,  track: 1.35, length: 3.4, width: 1.48, baseMass: 500,  frontalArea: 1.9,  cgHeight: 0.5 },
+  compact: { label: 'Compact',    wheelbase: 2.55, track: 1.5,  length: 4.2, width: 1.75, baseMass: 710,  frontalArea: 2.05, cgHeight: 0.52 },
+  mid:     { label: 'Mid-size',   wheelbase: 2.7,  track: 1.56, length: 4.6, width: 1.85, baseMass: 880,  frontalArea: 2.2,  cgHeight: 0.53 },
+  large:   { label: 'Large',      wheelbase: 2.9,  track: 1.62, length: 4.9, width: 1.95, baseMass: 1050, frontalArea: 2.35, cgHeight: 0.55 },
+  truck:   { label: 'Truck',      wheelbase: 3.2,  track: 1.7,  length: 5.4, width: 2.05, baseMass: 1450, frontalArea: 3.0,  cgHeight: 0.75 },
 };
 
 export const CHASSIS_MATERIALS: Record<ChassisMaterial, ChassisMaterialData> = {
