@@ -9,8 +9,9 @@
  *  - closed tracks get their closure error (position + heading + elevation) distributed
  *    smoothly (smoothstep) over the final `closureBlend` metres;
  *  - project() uses a uniform spatial hash (8 m cells) for global search and a local
- *    ±30 m window around a hint, refined to sub-sample accuracy with a few fixed-point
- *    iterations against the interpolated centreline (matches poseAt to ~mm);
+ *    ±30 m window around a hint, refined to sub-sample accuracy with a few Newton steps
+ *    on the along-track residual against the interpolated centreline (exact inverse of
+ *    poseAt for any |lateral·curvature| < 1, with a bracketed-bisection safety net);
  *  - sampleAt() implements the RoadQuery contract for the vehicle sim, with a small
  *    LRU cache (8 m cells → last s) standing in for a hint.
  *
@@ -61,6 +62,17 @@ const CELL_SIZE = 8;
 const HINT_WINDOW_M = 30;
 /** Hinted result farther than this × track width from the centreline triggers a global re-search. */
 const HINT_REJECT_WIDTH_FACTOR = 0.6;
+/** Newton refinement of the projection: iteration budget before the bisection fallback. */
+const REFINE_NEWTON_ITERS = 8;
+/** Projection refinement stops when the arc-length update is below this (m). */
+const REFINE_TOL_M = 1e-7;
+/**
+ * Newton is skipped when |df/ds| = |1 − lateral·curvature| falls below this, i.e. within
+ * ~10 % of the centre of curvature, where the step would be badly conditioned.
+ */
+const REFINE_MIN_SLOPE = 0.1;
+/** Bisection fallback brackets the root within ± this many sample steps of the chord estimate. */
+const REFINE_BRACKET_STEPS = 4;
 /** First grid row is this far behind the start line (m). */
 const GRID_FIRST_ROW_BEHIND = 8;
 /** Stage overflow slots start this far ahead of the start line (m). */
@@ -430,9 +442,12 @@ export function compileTrack(spec: TrackSpec): CompiledTrack {
     return m >= length ? 0 : m;
   };
 
-  /** Bracketing samples and interpolation factor for a wrapped/clamped arc length. */
-  const samplePair = (s: number): { i0: number; i1: number; t: number } => {
-    if (n < 2) return { i0: 0, i1: 0, t: 0 };
+  /**
+   * Bracketing samples, interpolation factor and interval length (m) for a wrapped/clamped
+   * arc length.
+   */
+  const samplePair = (s: number): { i0: number; i1: number; t: number; span: number } => {
+    if (n < 2) return { i0: 0, i1: 0, t: 0, span: 0 };
     if (closed) {
       let i0 = Math.floor(s / step);
       if (i0 >= n) i0 = n - 1;
@@ -440,7 +455,7 @@ export function compileTrack(spec: TrackSpec): CompiledTrack {
       const i1 = (i0 + 1) % n;
       const s0 = i0 * step;
       const s1 = i0 === n - 1 ? length : (i0 + 1) * step;
-      return { i0, i1, t: clamp01((s - s0) / (s1 - s0)) };
+      return { i0, i1, t: clamp01((s - s0) / (s1 - s0)), span: s1 - s0 };
     }
     let i0 = Math.floor(s / step);
     if (i0 > n - 2) i0 = n - 2;
@@ -448,19 +463,38 @@ export function compileTrack(spec: TrackSpec): CompiledTrack {
     const i1 = i0 + 1;
     const s0 = samples[i0].s;
     const s1 = samples[i1].s;
-    return { i0, i1, t: s1 > s0 ? clamp01((s - s0) / (s1 - s0)) : 0 };
+    const span = s1 - s0;
+    return { i0, i1, t: span > 0 ? clamp01((s - s0) / span) : 0, span };
   };
 
-  /** Cheap interpolated pose (x, y, heading) for the projection refinement loop. */
-  const evalPose = (sIn: number): { x: number; y: number; heading: number } => {
+  interface PoseD {
+    x: number;
+    y: number;
+    heading: number;
+    /** d/ds of the interpolated position (the chord direction; |·| ≈ 1). */
+    dxds: number;
+    dyds: number;
+    /** d/ds of the interpolated heading (≈ curvature). */
+    dhds: number;
+  }
+
+  /** Cheap interpolated pose (x, y, heading) plus its s-derivatives for the projection refinement. */
+  const evalPose = (sIn: number): PoseD => {
     const s = wrapS(sIn);
-    const { i0, i1, t } = samplePair(s);
+    const { i0, i1, t, span } = samplePair(s);
     const a = samples[i0];
     const b = samples[i1];
+    const ex = b.x - a.x;
+    const ey = b.y - a.y;
+    const dh = wrapAngle(b.heading - a.heading);
+    const inv = span > 0 ? 1 / span : 0;
     return {
-      x: a.x + (b.x - a.x) * t,
-      y: a.y + (b.y - a.y) * t,
-      heading: a.heading + wrapAngle(b.heading - a.heading) * t,
+      x: a.x + ex * t,
+      y: a.y + ey * t,
+      heading: a.heading + dh * t,
+      dxds: ex * inv,
+      dyds: ey * inv,
+      dhds: dh * inv,
     };
   };
 
@@ -603,10 +637,21 @@ export function compileTrack(spec: TrackSpec): CompiledTrack {
   };
 
   /**
-   * Sub-sample projection around a nearest sample: chord projection onto the two
-   * adjacent polyline segments, then a few fixed-point iterations
-   * s <- s + (p - C(s))·t̂(s) against the interpolated pose so that the result is the
-   * exact inverse of poseAt (the residual is perpendicular to the interpolated heading).
+   * Sub-sample projection around a nearest sample. Solves f(s) = (p − C(s))·t̂(s) = 0
+   * against the *interpolated* pose (position and heading lerped between samples), which
+   * makes the result the exact inverse of poseAt: the residual is perpendicular to the
+   * interpolated heading. f is continuous and, wherever the projection is well defined
+   * (|lateral·curvature| < 1), strictly decreasing with f'(s) ≈ −(1 − lateral·curvature).
+   *
+   *  1. Chord projection onto the two polyline segments adjacent to the nearest sample
+   *     — within ~½·|lateral·κ|·step of the root (the chord normal ≠ the lerped heading).
+   *  2. Newton steps with the analytic f' — 2–3 iterations for any |lateral·κ| ≲ 0.9.
+   *     (A plain fixed-point s ← s + f only contracts at rate |lateral·κ| per iteration
+   *     and used to stall beyond ~0.35 within its budget, returning the chord estimate.)
+   *  3. If Newton is ill-conditioned or has not converged, bisect f on a sign change
+   *     bracketed around the chord estimate — cannot fail where the projection exists.
+   *  4. No bracket ⇒ the point is at/inside the centre of curvature (|lateral·κ| ≥ 1),
+   *     where s is genuinely ambiguous — keep the chord result.
    */
   const refineAt = (
     x: number,
@@ -625,6 +670,7 @@ export function compileTrack(spec: TrackSpec): CompiledTrack {
     };
     if (n < 2) return finish(0);
 
+    // 1. Chord projection onto the polyline segments either side of the nearest sample.
     let bestS = samples[iNear].s;
     let bestD2 = Infinity;
     const chord = (ia: number): void => {
@@ -651,27 +697,57 @@ export function compileTrack(spec: TrackSpec): CompiledTrack {
     if (prev >= 0) chord(prev);
     chord(iNear);
 
+    // 2. Newton on the along-track residual f(s) = (p − C(s))·t̂(s).
+    const maxStep = 3 * step;
     let s = bestS;
-    let converged = false;
-    for (let it = 0; it < 12; it++) {
+    for (let it = 0; it < REFINE_NEWTON_ITERS; it++) {
       const c = evalPose(s);
       const dx = x - c.x;
       const dy = y - c.y;
-      let ds = dx * Math.cos(c.heading) + dy * Math.sin(c.heading);
-      if (!closed && ((s <= 0 && ds < 0) || (s >= length && ds > 0))) {
-        converged = true; // clamped at a stage end — that IS the projection
-        break;
+      const ct = Math.cos(c.heading);
+      const st = Math.sin(c.heading);
+      const f = dx * ct + dy * st;
+      if (!closed && ((s <= 0 && f < 0) || (s >= length && f > 0))) {
+        return finish(s); // clamped at a stage end — that IS the projection
       }
-      ds = clamp(ds, -3 * step, 3 * step);
+      // f' = −C'·t̂ + ((p − C)·n̂)·θ'  ≈ −(1 − lateral·curvature)
+      const fp = -(c.dxds * ct + c.dyds * st) + (-dx * st + dy * ct) * c.dhds;
+      if (fp > -REFINE_MIN_SLOPE) break; // near the centre of curvature: let bisection decide
+      const ds = clamp(-f / fp, -maxStep, maxStep);
       s = closed ? wrapS(s + ds) : clamp(s + ds, 0, length);
-      if (Math.abs(ds) < 1e-6) {
-        converged = true;
+      if (Math.abs(ds) < REFINE_TOL_M) return finish(s);
+    }
+
+    // 3. Bisection on a sign change of f around the chord estimate (f decreases through
+    //    the projection). Rare path: ill-conditioned f' or Newton bouncing across a
+    //    curvature discontinuity.
+    const fAt = (sq: number): number => {
+      const c = evalPose(sq);
+      return (x - c.x) * Math.cos(c.heading) + (y - c.y) * Math.sin(c.heading);
+    };
+    let lo = bestS;
+    let hi = bestS;
+    let bracketed = false;
+    for (let half = step; half <= REFINE_BRACKET_STEPS * step + 1e-9; half *= 2) {
+      lo = closed ? bestS - half : Math.max(0, bestS - half);
+      hi = closed ? bestS + half : Math.min(length, bestS + half);
+      const flo = fAt(lo);
+      const fhi = fAt(hi);
+      if (!closed && lo <= 0 && flo <= 0) return finish(0);
+      if (!closed && hi >= length && fhi >= 0) return finish(length);
+      if (flo > 0 && fhi < 0) {
+        bracketed = true;
         break;
       }
     }
-    // Non-convergence only happens for points with |lateral|·|curvature| >= 1 (at or past
-    // a corner's centre of curvature) where s is ill-defined — keep the chord result there.
-    return converged ? finish(s) : finish(bestS);
+    // 4. No sign change: at/inside the centre of curvature — s is ill-defined, keep the chord.
+    if (!bracketed) return finish(bestS);
+    for (let it = 0; it < 64 && hi - lo > REFINE_TOL_M; it++) {
+      const mid = 0.5 * (lo + hi);
+      if (fAt(mid) > 0) lo = mid;
+      else hi = mid;
+    }
+    return finish(0.5 * (lo + hi));
   };
 
   const project = (

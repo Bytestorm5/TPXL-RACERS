@@ -204,6 +204,85 @@ describe('projection', () => {
     expect(Number.isFinite(sink)).toBe(true);
     expect(elapsed).toBeLessThan(300);
   });
+
+  // ---- tight hairpins: |lateral·curvature| well above the old ~0.35 limit ----------------
+  // (Only a 180° hairpin's own straights are nearby, so the nearest-centreline answer is
+  // unambiguous for every |lateral| < R: no other part of the track comes closer.)
+
+  /** Stage: 60 m straight, 180° left hairpin of the given radius, 60 m straight. */
+  const hairpinStage = (radius: number, width: number): TrackSpec =>
+    base({ defaultWidth: width }, [
+      { length: 60 },
+      { length: Math.PI * radius, radius, turn: 'left' },
+      { length: 60 },
+    ]);
+
+  /** Circuit: two 100 m straights joined by 180° left hairpins ("paperclip"). Closes exactly. */
+  const paperclip = (radius: number, width: number): TrackSpec =>
+    base({ closed: true, defaultWidth: width }, [
+      { length: 100 },
+      { length: Math.PI * radius, radius, turn: 'left' },
+      { length: 100 },
+      { length: Math.PI * radius, radius, turn: 'left' },
+    ]);
+
+  /**
+   * poseAt(s, lat) → project must invert exactly: 50 s values through [s0, s1] × 11 lateral
+   * offsets spanning ±maxLat, unhinted and with a hint up to ±10 m off.
+   */
+  const hairpinRoundTrip = (
+    track: CompiledTrack,
+    s0: number,
+    s1: number,
+    maxLat: number,
+    seed: number,
+  ): void => {
+    const rng = makeRng(seed);
+    const closed = track.spec.closed;
+    for (let k = 0; k < 50; k++) {
+      const s = s0 + ((s1 - s0) * k) / 49;
+      for (let j = -5; j <= 5; j++) {
+        const lat = (j / 5) * maxLat;
+        const p = track.poseAt(s, lat);
+        const cold = track.project(p.x, p.y);
+        const hot = track.project(p.x, p.y, s + 20 * (rng() - 0.5));
+        for (const r of [cold, hot]) {
+          const where = `s=${s.toFixed(2)} lat=${lat.toFixed(2)}`;
+          expect(sDelta(r.s, s, track.length, closed), where).toBeLessThan(0.05);
+          expect(Math.abs(r.lateral - lat), where).toBeLessThan(0.01);
+        }
+      }
+    }
+  };
+
+  it('round-trips through an R10 hairpin on a 10 m track (|lat·κ| up to 0.5 at the edges)', () => {
+    const track = compileTrack(hairpinStage(10, 10));
+    expect(track.issues).toEqual([]);
+    expect(track.centreAt(60 + 5 * Math.PI).curvature).toBeCloseTo(0.1, 9);
+    // 5 m of straight either side covers the curvature discontinuities at the hairpin ends
+    hairpinRoundTrip(track, 55, 60 + Math.PI * 10 + 5, 5, 11);
+  });
+
+  it('round-trips through an R8 hairpin on an 8 m track (|lat·κ| up to 0.5 at the edges)', () => {
+    const track = compileTrack(hairpinStage(8, 8));
+    expect(track.issues).toEqual([]);
+    hairpinRoundTrip(track, 55, 60 + Math.PI * 8 + 5, 4, 12);
+  });
+
+  it('stays exact well off the track edge: |lat·κ| = 0.8 (±8 m on the R10 hairpin)', () => {
+    const track = compileTrack(hairpinStage(10, 10));
+    hairpinRoundTrip(track, 55, 60 + Math.PI * 10 + 5, 8, 13);
+  });
+
+  it('round-trips a closed paperclip (two R8 hairpins, 8 m wide) incl. the seam hairpin', () => {
+    const track = compileTrack(paperclip(8, 8));
+    expect(track.issues).toEqual([]);
+    expect(track.closureError).toBeLessThan(1e-6);
+    const arc = Math.PI * 8;
+    hairpinRoundTrip(track, 95, 100 + arc + 5, 4, 14);
+    // second hairpin ends at the seam (s = length ≡ 0): span past it to exercise the wrap
+    hairpinRoundTrip(track, 200 + arc - 5, track.length + 5, 4, 15);
+  });
 });
 
 describe('sampleAt (RoadQuery)', () => {

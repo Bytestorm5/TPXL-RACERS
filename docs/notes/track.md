@@ -1,7 +1,7 @@
 # Module notes — track (src/sim/track.ts, src/tracks/*)
 
 Author: track-standard agent. Status: complete; `npx tsc --noEmit` and
-`npx vitest run tests/track.test.ts` (23 tests) pass.
+`npx vitest run tests/track.test.ts` (27 tests) pass.
 
 ## What was implemented
 
@@ -10,12 +10,14 @@ Author: track-standard agent. Status: complete; `npx tsc --noEmit` and
 - `compileTrack(spec)` — the full `CompiledTrack`: sampled centreline, `centreAt`,
   `project` (spatial hash + hint window + sub-sample refinement), `poseAt`, `gridSlot`,
   `sampleAt` (RoadQuery), `bounds`, `issues`, `startLine`, ambient/air density.
-- Five built-in tracks in `src/tracks/*.json`, exported as `BUILTIN_TRACKS` from
+- Six built-in tracks in `src/tracks/*.json`, exported as `BUILTIN_TRACKS` from
   `src/tracks/index.ts`: speedbowl (2 400.0 m banked oval), ridgeway (4 817.0 m GP
   reference circuit), pinecone-stage (6 440.4 m rally stage, open), clubsprint
-  (1 671.3 m club track), glacier-loop (2 579.1 m snow/ice). All compile with **zero
-  issues**; circuit closure errors before blending: 0.001–0.038 m (checked by solving
-  the loop geometry numerically at design time, not guessed).
+  (1 671.3 m club track), glacier-loop (2 579.1 m snow/ice), dunes-rallycross
+  (1 587.2 m gravel/dirt rallycross loop with a 250 m tarmac joker, tabletop jump and
+  an R18 hairpin). All compile with **zero issues**; circuit closure errors before
+  blending: 0.001–0.038 m (checked by solving the loop geometry numerically at design
+  time, not guessed).
 - docs/TRACK_FORMAT.md — modder-facing reference.
 
 ## Key formulas
@@ -42,12 +44,29 @@ Author: track-standard agent. Status: complete; `npx tsc --noEmit` and
 - **Projection**: uniform spatial hash (8 m cells) over samples with expanding-ring
   search for the global path; hinted path scans samples within ±30 m of the hint and
   bails to global when the local minimum sits on the window boundary or ends up farther
-  than 0.6·width off the centreline. Refinement: chord projection onto the two adjacent
-  polyline segments, then ≤ 12 fixed-point iterations `s ← s + (p−C(s))·t̂(s)` against
-  the *interpolated* pose — this makes `project` the exact inverse of `poseAt`
-  (round-trip < 0.05 m in s, < 0.01 m in lateral on every built-in, tested).
-  Convergence needs |lateral·curvature| < 1; past a corner's centre of curvature the
-  chord result is kept. 100k hinted calls run in well under 300 ms (tested).
+  than 0.6·width off the centreline. Refinement solves the along-track residual
+  `f(s) = (p−C(s))·t̂(s) = 0` against the *interpolated* pose (position and heading both
+  lerped between samples) — this makes `project` the exact inverse of `poseAt`
+  (round-trip < 0.05 m in s, < 0.01 m in lateral on every built-in, tested):
+  1. chord projection onto the two polyline segments adjacent to the nearest sample —
+     only within ~½·|lateral·κ|·step of the root, because the chord normal is not the
+     lerped heading (0.25 m at |lateral·κ| = 0.5 with a 1 m step);
+  2. Newton with the analytic slope `f′ = −C′·t̂ + ((p−C)·n̂)·θ′ ≈ −(1 − lateral·κ)`,
+     converging in 2–3 iterations for any |lateral·κ| ≲ 0.9 (budget 8, tolerance 1e-7 m,
+     step clamped to ±3 sample steps). The earlier fixed-point `s ← s + f` contracted only
+     at rate |lateral·κ| per iteration and stalled beyond ≈ 0.35 within its budget, falling
+     back to the raw chord estimate — a 0.12–0.25 m error on tight hairpins, which forced
+     built-in authors onto gentler hairpins (dunes: R18 on 11 m, |lateral·κ| = 0.31);
+  3. if Newton is ill-conditioned (|f′| < 0.1) or has not converged, bisection on a sign
+     change of f bracketed within ±1…4 steps of the chord estimate (f is monotone through
+     the projection wherever it exists);
+  4. no bracket ⇒ the point is at/inside the centre of curvature (|lateral·κ| ≥ 1) where s
+     is genuinely ambiguous — the chord result is kept.
+  Tested exact (< 1e-4 m) on R10/10 m and R8/8 m hairpins (|lateral·κ| = 0.5 at the
+  edges) and at |lateral·κ| = 0.8, hinted and unhinted, stage and circuit (incl. across the
+  seam). Authors may now use hairpins down to width/R ≈ 1.6 (the fold warning) without
+  degrading `project`. 100k hinted calls run in well under 300 ms (tested; ~110 ms, the
+  cost is the ±30 m sample scan, not the refinement).
 
 ## Simplifications / assumptions (for docs/ASSUMPTIONS.md — Track section)
 
@@ -94,5 +113,8 @@ Author: track-standard agent. Status: complete; `npx tsc --noEmit` and
   varies along the track, don't cache halfWidth globally.
 - Stage grids: `gridSlot(i)` can place cars *ahead* of `startLine` (see above) — timing
   should start when the car crosses `startLine`, not at spawn.
-- The five built-ins: use `ridgeway` as the lap-time reference; `speedbowl` Turn 1/2
+- The six built-ins: use `ridgeway` as the lap-time reference; `speedbowl` Turn 1/2
   core bank is exactly 24° (`deg2rad(24)`), reached 60 m into each turn.
+- `project` is exact for any |lateral·curvature| < 1 (inside the fold radius). Inside a
+  corner's centre of curvature s is ambiguous by construction; the result there is the
+  nearest polyline point, still finite and on the right part of the track.
