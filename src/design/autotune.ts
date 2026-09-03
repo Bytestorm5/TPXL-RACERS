@@ -374,7 +374,6 @@ function tuneBalance(build: CarBuild, intent: HandlingIntent, log: ChangeLog): v
   const x = goldenMin((v) => err(trialArb(v)), xLo, xHi, 0.004);
   const arbFront = snapToRange('suspension.arbFront', x);
   const arbRear = snapToRange('suspension.arbRear', total - arbFront);
-  const before = gradient(build);
   const dir = arbFront > build.suspension.arbFront ? 'front' : 'rear';
   log.setNumber(build, 'suspension.arbFront', arbFront, why('anti-roll bar stiffness', dir));
   log.setNumber(build, 'suspension.arbRear', arbRear, why('anti-roll bar stiffness', dir));
@@ -406,7 +405,6 @@ function tuneBalance(build: CarBuild, intent: HandlingIntent, log: ChangeLog): v
     log.setNumber(build, 'suspension.springRear', springRear, why('spring stiffness (bars at their limit)', sdir));
     after = gradient(build);
   }
-  void before;
 }
 
 /**
