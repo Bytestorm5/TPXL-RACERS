@@ -355,3 +355,37 @@ canvas.chart { width: 100%; height: 150px; display: block; background: var(--bg-
   .garage, .setup { grid-template-columns: 1fr; }
   .garage > *, .setup > * { overflow: visible; }
 }
+
+/* ---------------------------------------------------------------- input settings */
+.input-screen { display: grid; grid-template-columns: minmax(0, 1fr) 380px; }
+.input-screen > * { min-height: 0; overflow: auto; padding: 10px 16px; }
+.input-side { border-left: 1px solid var(--line); background: var(--bg-2); }
+.devices { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.device { background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 12px; cursor: pointer; }
+.device.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.device.empty { color: var(--muted); cursor: default; }
+.device-name { font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.input-editor .editor-head { position: static; }
+.input-editor .section { border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg-2); margin-bottom: 10px; }
+.input-editor .section-title { padding: 8px 12px 0; font-weight: 600; cursor: default; }
+.input-editor .section-title::before { content: none; }
+.input-editor .section-body { padding: 4px 12px 10px; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 6px 16px; }
+.wizard { background: rgba(255,122,26,0.1); border: 1px solid var(--accent); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 12px; }
+.wizard-prompt { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+.wizard-buttons { display: flex; gap: 8px; margin-top: 8px; }
+.raw-axes { display: flex; flex-direction: column; gap: 4px; }
+.raw-axis { display: grid; grid-template-columns: 56px 1fr; align-items: center; gap: 8px; }
+.raw-track { position: relative; height: 10px; border-radius: 5px; background: rgba(255,255,255,0.08); }
+.raw-track::after { content: ''; position: absolute; left: 50%; top: -2px; width: 1px; height: 14px; background: rgba(255,255,255,0.35); }
+.raw-fill { position: absolute; top: 0; height: 100%; background: var(--info); border-radius: 5px; }
+.raw-fill.accent { background: var(--accent); }
+.raw-buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.raw-btn-wrap { display: inline-flex; align-items: center; gap: 3px; }
+.raw-btn { width: 12px; height: 12px; border-radius: 50%; background: rgba(255,255,255,0.1); border: 1px solid var(--line-2); display: inline-block; }
+.raw-btn.on { background: var(--accent); border-color: var(--accent); }
+.test-view { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.test-bar { position: relative; height: 10px; border-radius: 5px; background: rgba(255,255,255,0.08); overflow: hidden; }
+.test-bar .bar-fill { height: 100%; background: var(--ok); }
+.input-buttons { display: flex; gap: 8px; margin-top: 16px; }
+@media (max-width: 1000px) { .input-screen { grid-template-columns: 1fr; } }
+

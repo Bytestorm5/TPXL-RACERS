@@ -5,7 +5,7 @@
  * chase / hood / top / tv cameras) on a WebGL canvas, with the DOM HUD (and a 2D minimap) on top.
  * Loop: requestAnimationFrame → race.step(dt) with dt capped at 8 × SIM_DT (slow-motion rather
  * than a spiral) → scene.update + render. HUD strings are rebuilt only when their values change.
- * Input: keyboard, plus a gamepad when one is connected (src/ui/gamepad.ts).
+ * Input: keyboard, plus controllers / steering wheels through src/ui/input (profiles, H-pattern, rumble).
  *
  * The race is created when the screen is entered; if the simulation throws (a runtime fault) a
  * friendly panel is shown instead of a crash. Standings, lap counts, sectors, gaps and the results
@@ -26,7 +26,8 @@ import type { DriverInput, VehicleState } from '../sim/types';
 import { SIM_DT } from '../sim/vehicle';
 import { Bar, ClassSwitch, clear, h, Text, toast } from './dom';
 import { fmtDelta, fmtInt, fmtLap } from './format';
-import { GamepadInput } from './gamepad';
+import { inputManager, type InputFrame } from './input/manager';
+import { gearPulse } from './input/profile';
 import { ROUTES, type Nav, type Screen } from './screen';
 import type { PendingRace, Session } from './state';
 import { drawMinimap, minimapTransform, SURFACE_LABEL, type MinimapTransform } from './trackRender';
@@ -354,7 +355,6 @@ class RaceView {
   private readonly hud = h('div', { class: 'hud' });
   private readonly track: CompiledTrack;
   private scene: RaceScene | null = null;
-  private readonly pad = new GamepadInput();
   private race: Race | null = null;
   private playerIndex = -1;
   private simError: string | null = null;
@@ -645,7 +645,7 @@ class RaceView {
       this.deltaText.el,
       this.bestText.el,
     );
-    const hint = h('div', { class: 'hud-hint' }, '↑↓ / W S drive · ←→ / A D steer · Space handbrake · E/Q shift · C camera · +/− distance · R reset · T telemetry · P pause · Esc menu · gamepad: stick + triggers, Y camera');
+    const hint = h('div', { class: 'hud-hint' }, '↑↓ / W S drive · ←→ / A D steer · Space handbrake · E/Q shift · C camera · +/− distance · R reset · T telemetry · P pause · Esc menu · controllers & wheels: set up under Input');
 
     // telemetry table
     const head = h(
@@ -891,32 +891,63 @@ class RaceView {
     }
     this.throttle = moveToward(this.throttle, up ? 1 : 0, (up ? THROTTLE_RAMP : PEDAL_RELEASE) * dt);
     this.brake = moveToward(this.brake, down ? 1 : 0, (down ? BRAKE_RAMP : PEDAL_RELEASE) * dt);
-    // gamepad: analogue values win over the keyboard ramps while the pad is being used
+    // controller / wheel: analogue values win over the keyboard ramps while the device is being used
     const pad = this.padState;
     const inp = this.input;
+    const car = race.cars[this.playerIndex];
     inp.steer = pad && pad.steer !== 0 ? pad.steer : this.steer;
     inp.throttle = pad ? Math.max(this.throttle, pad.throttle) : this.throttle;
     inp.brake = pad ? Math.max(this.brake, pad.brake) : this.brake;
-    inp.handbrake = k.has(' ') || (pad && pad.handbrake > 0) ? 1 : 0;
-    const auto = race.cars[this.playerIndex].entry.spec.drivetrain.autoShift;
-    inp.shiftUp = !auto && (this.shiftUp || Boolean(pad?.shiftUp));
-    inp.shiftDown = !auto && (this.shiftDown || Boolean(pad?.shiftDown));
+    inp.handbrake = k.has(' ') ? 1 : pad ? pad.handbrake : 0;
+    const auto = car.entry.spec.drivetrain.autoShift;
+    let shiftUp = this.shiftUp || Boolean(pad?.shiftUp);
+    let shiftDown = this.shiftDown || Boolean(pad?.shiftDown);
+    // H-pattern shifter: pulse the sequential edges toward the selected gear (one step per frame)
+    if (pad && pad.gearSelect !== null) {
+      const pulse = gearPulse(car.state.gear, pad.gearSelect, car.state.shiftTimer);
+      shiftUp = shiftUp || pulse.up;
+      shiftDown = shiftDown || pulse.down;
+    }
+    inp.shiftUp = !auto && shiftUp;
+    inp.shiftDown = !auto && shiftDown;
     this.shiftUp = false;
     this.shiftDown = false;
     this.padState = null;
     race.setPlayerInput(inp);
   }
 
-  /** The pad state polled this frame (consumed by the first updateInput of the frame). */
-  private padState: ReturnType<GamepadInput['poll']> | null = null;
+  /** The device frame polled this frame (consumed by the first updateInput of the frame). */
+  private padState: InputFrame | null = null;
+  private lastImpactRumble = 0;
+  private lockRumbleAt = 0;
 
-  /** Poll the gamepad once per frame; edge buttons act immediately, the axes are consumed by updateInput. */
+  /** Poll controllers / wheels once per frame; edge buttons act immediately, the axes are consumed by updateInput. */
   private pollGamepad(): void {
-    const p = this.pad.poll();
+    const p = inputManager.poll();
     if (p.reset) this.resetPlayer();
     if (p.camera) this.cycleCamera();
     if (p.menu) this.toggleMenu();
     this.padState = p.active ? p : null;
+    this.updateRumble();
+  }
+
+  /** Rumble (pads with an actuator): a thump on collisions, a buzz while a wheel is locked or spinning at speed. */
+  private updateRumble(): void {
+    const race = this.race;
+    if (!race || this.playerIndex < 0 || this.paused) return;
+    const car = race.cars[this.playerIndex];
+    if (car.lastImpact > 500 && car.lastImpact !== this.lastImpactRumble) {
+      this.lastImpactRumble = car.lastImpact;
+      inputManager.rumble(Math.min(1, car.lastImpact / 4000), 0.6, 180);
+      return;
+    }
+    const st = car.state;
+    const slipping = st.speed > 5 && st.wheels.some((w) => w.onGround && (w.locked || w.spinning));
+    const now = performance.now();
+    if (slipping && now - this.lockRumbleAt > 120) {
+      this.lockRumbleAt = now;
+      inputManager.rumble(0, 0.35, 120);
+    }
   }
 
   // ----------------------------------------------------------------- loop

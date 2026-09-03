@@ -24,7 +24,9 @@ src/ui/charts.ts        generic line/bar plotters + one chart set per tab (corne
 src/ui/units.ts         display units (metric / imperial / auto from the locale): conversions, garage field mapping, text localisation
 src/ui/raceSetup.ts   #/race        track cards (minimaps), car, laps, opponents (default line-up), AI skill, warm tyres
 src/ui/raceView.ts    #/race/run    fixed-step loop, RaceScene (3D), keyboard + gamepad input, HUD, minimap, sectors, telemetry, overlays, results (raceSummary)
-src/ui/gamepad.ts       standard-mapping gamepad polled per frame (edges for shift / camera / reset / menu)
+src/ui/input/profile.ts   device profiles (pure): presets, pedal / steer mapping math, H-pattern pulses, storage shape
+src/ui/input/manager.ts   polls every gamepad / wheel per frame → InputFrame; edges; rumble; connect toasts; racers.input.v1
+src/ui/input/settings.ts  #/input  devices, raw axis/button view, profile editor, setup wizard, live mapped-action panel
 src/ui/trackRender.ts   polyline minimap + its world→canvas transform (setup cards and the race HUD)
 src/ui/desktop.ts       the Electron bridge's shape (window.racersDesktop), null in the browser
 src/render3d/*          the 3D view (docs/notes/render3d.md)
@@ -125,9 +127,17 @@ once per frame. HUD text is written through `Text` (compares with the last strin
 decays first), throttle ramps 4/s, brake 6/s, release 10/s; handbrake is instant; shifts are one-frame
 pulses (the vehicle model latches edges, so several sub-steps see the same `true` safely) and are
 suppressed when `spec.drivetrain.autoShift`. `R` calls `race.resetCar(playerIndex)`. Keys are
-released on `window.blur`. A gamepad (`gamepad.ts`) is polled once per frame: its analogue steer
-replaces the keyboard ramp while off-centre, throttle/brake take the max of pad and keyboard, bumper
-edges shift, Y cycles the camera, Back resets, Start opens the menu.
+released on `window.blur`. Controllers and steering wheels (`input/`): `inputManager.poll()` once per
+frame maps every connected device through its profile and hands the race the frame of the device in
+use; its analogue steer replaces the keyboard ramp while off-centre, pedals take the max of device
+and keyboard, paddle edges shift, an H-pattern selection pulses the sequential edges toward the
+chosen gear one step per frame (`gearPulse`; reverse via neutral, as the vehicle model requires),
+camera / reset / menu buttons act on their edges. Rumble on pads with an actuator: a thump on
+`lastImpact`, a buzz while a wheel is locked or spinning at speed. Wheels' force feedback is not
+reachable from the Gamepad API (documented limitation). Profiles: presets for Logitech G29/G920,
+Thrustmaster, Fanatec and standard-mapping pads; the wizard on the Input screen learns a wheel's
+axes (rest / full raw values per pedal, so inverted pedals need no option) and buttons. The
+keyboard always works alongside.
 
 ## Debug / e2e hook (`window.__racers`)
 
@@ -170,6 +180,7 @@ Garage and setup are plain focusable DOM (tab / enter / space work on car and tr
 | `racers.setup.v1` | `{ format: 1, trackId, laps, playerCarId, opponents: string[], aiSkill, preheatTyres? }` |
 | `racers.best.v1` | `{ format: 1, best: { "<trackId>|<carId>": seconds } }` |
 | `racers.prefs.v1` | `{ format: 1, units: 'auto' | 'metric' | 'imperial' }` |
+| `racers.input.v1` | `{ format: 1, profiles: { "<gamepad id>": InputProfile }, primary? }` |
 
 All reads go through `loadJson(key, validator)`: parse failure or shape mismatch removes the key and
 falls back to defaults. Writes are try/catch (quota / private mode). In the desktop shell the same

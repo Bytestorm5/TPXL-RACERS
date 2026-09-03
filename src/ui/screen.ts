@@ -11,4 +11,5 @@ export const ROUTES = {
   garage: '#/garage',
   setup: '#/race',
   run: '#/race/run',
+  input: '#/input',
 } as const;

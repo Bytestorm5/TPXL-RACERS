@@ -11,6 +11,7 @@
  *   racers.setup.v1  { format: 1, trackId, laps, playerCarId, opponents: string[], aiSkill, preheatTyres? }
  *   racers.best.v1   { format: 1, best: Record<`${trackId}|${carId}`, number> }
  *   racers.prefs.v1  { format: 1, units?: 'auto' | 'metric' | 'imperial' }
+ *   racers.input.v1  { format: 1, profiles: Record<deviceId, InputProfile>, primary? }  (src/ui/input/profile.ts)
  */
 import type { CarBuild } from '../design/types';
 import { desktop, type DesktopStorage } from './desktop';
@@ -20,6 +21,7 @@ export const KEYS = {
   setup: 'racers.setup.v1',
   best: 'racers.best.v1',
   prefs: 'racers.prefs.v1',
+  input: 'racers.input.v1',
 } as const;
 
 export type StorageBackend = DesktopStorage;

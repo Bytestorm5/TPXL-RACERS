@@ -3,11 +3,13 @@
  *   #/            landing
  *   #/garage      car designer with live analysis
  *   #/race        race setup (track / car / opponents)
- *   #/race/run    the race itself (canvas + HUD)
+ *   #/race/run    the race itself (3D canvas + HUD)
+ *   #/input       controllers & steering wheels: profiles, bindings, setup wizard
  */
 import './style.css';
 import { debugHook as garageDebug, mountGarage } from './garage';
 import { h } from './dom';
+import { mountInputSettings } from './input/settings';
 import { mountLanding } from './landing';
 import { mountRaceSetup } from './raceSetup';
 import { mountRaceView, raceDebug } from './raceView';
@@ -29,6 +31,7 @@ const navLinks: Array<[string, string]> = [
   [ROUTES.landing, 'RACERS'],
   [ROUTES.garage, 'Garage'],
   [ROUTES.setup, 'Race'],
+  [ROUTES.input, 'Input'],
 ];
 const topbar = h(
   'nav',
@@ -90,6 +93,9 @@ function route(): void {
         break;
       case ROUTES.run:
         current = mountRaceView(screenHost, session, nav);
+        break;
+      case ROUTES.input:
+        current = mountInputSettings(screenHost, session, nav);
         break;
       default:
         current = mountLanding(screenHost, session, nav);

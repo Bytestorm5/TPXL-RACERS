@@ -394,6 +394,48 @@ async function main() {
     if (!((await page.evaluate(HOOK.snapshot)).time > tAfterMenu)) fail('race: the race did not resume after closing the pause menu');
     await page.keyboard.press('-');
 
+    // controller / wheel: a fake Gamepad-API device (a G29-style wheel: pedals rest at +1, pressed −1)
+    await page.evaluate(() => {
+      const g = {
+        id: 'Logitech G29 Driving Force Racing Wheel (Vendor: 046d Product: c24f)',
+        index: 0,
+        connected: true,
+        mapping: '',
+        timestamp: 0,
+        axes: [0, 1, 1, 0, 0, 1],
+        buttons: Array.from({ length: 24 }, () => ({ pressed: false, touched: false, value: 0 })),
+      };
+      window.__fakePad = g;
+      navigator.getGamepads = () => [g, null, null, null];
+    });
+    await page.evaluate(() => {
+      const g = window.__fakePad;
+      g.axes[0] = -0.3; // wheel a third of the way LEFT (range 0.5 → 60 % lock)
+      g.axes[2] = -1; // throttle fully pressed
+    });
+    await sleep(700);
+    p = await page.evaluate(HOOK.player);
+    if (!(p.steer > 0.5 && p.steer < 0.7)) fail(`wheel: expected ~0.6 left steer from the wheel axis, got ${p.steer}`);
+    if (!(p.throttle > 0.95)) fail(`wheel: pedal (rest +1 → −1) did not reach the sim (${p.throttle})`);
+    await page.evaluate(() => {
+      const g = window.__fakePad;
+      g.axes[0] = 0;
+      g.axes[2] = 1;
+      g.axes[5] = -1; // brake
+    });
+    await sleep(500);
+    p = await page.evaluate(HOOK.player);
+    const brakeNow = await page.evaluate(() => window.__racers.race.race.cars[window.__racers.race.playerIndex].input.brake);
+    if (!(brakeNow > 0.95)) fail(`wheel: brake pedal did not reach the sim (${brakeNow})`);
+    if (Math.abs(p.steer) > 0.05) fail(`wheel: steer did not return to centre (${p.steer})`);
+    await page.evaluate(() => {
+      const g = window.__fakePad;
+      g.axes[5] = 1;
+      navigator.getGamepads = () => [null, null, null, null];
+    });
+    await sleep(300);
+    log('wheel: fake G29 steer + pedals reach the sim');
+
     // camera modes: C cycles chase → hood → top → tv → chase; each renders without errors
     const modes = [];
     for (let i = 0; i < 4; i++) {
@@ -489,6 +531,51 @@ async function main() {
     const snapRestart = await page.evaluate(HOOK.snapshot);
     if (snapRestart.started || snapRestart.time !== 0) fail('restart: the race did not go back to the countdown');
     log('restart ok');
+
+    // ---- input settings screen with a fake pad --------------------------------------------------
+    await page.goto(`${base}#/input`, { waitUntil: 'load' });
+    await page.waitForSelector('.input-screen');
+    const empty = await page.$eval('.devices', (el) => el.textContent || '');
+    if (!/No controller/.test(empty)) fail(`input: expected the empty state, got "${empty.slice(0, 60)}"`);
+    await page.evaluate(() => {
+      const g = {
+        id: 'Xbox Wireless Controller (STANDARD GAMEPAD Vendor: 045e Product: 0b12)',
+        index: 0,
+        connected: true,
+        mapping: 'standard',
+        timestamp: 0,
+        axes: [0, 0, 0, 0],
+        buttons: Array.from({ length: 17 }, () => ({ pressed: false, touched: false, value: 0 })),
+      };
+      window.__fakePad = g;
+      navigator.getGamepads = () => [g, null, null, null];
+    });
+    await sleep(400);
+    const devText = await page.$eval('.devices', (el) => el.textContent || '');
+    if (!/Xbox Wireless Controller/.test(devText) || !/standard mapping/.test(devText)) fail(`input: device not listed with its preset ("${devText.slice(0, 120)}")`);
+    // bind the handbrake to button 1 through the single-action binder, then check it persisted
+    await page.evaluate(() => {
+      const btns = [...document.querySelectorAll('.input-editor .field')].find((f) => /^Handbrake$/.test(f.querySelector('label')?.textContent || ''));
+      btns.querySelector('button').click();
+    });
+    await sleep(400);
+    await page.evaluate(() => (window.__fakePad.buttons[1] = { pressed: true, touched: true, value: 1 }));
+    await sleep(300);
+    await page.evaluate(() => (window.__fakePad.buttons[1] = { pressed: false, touched: false, value: 0 }));
+    await sleep(200);
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('racers.input.v1') || '{}'));
+    const prof = stored.profiles && Object.values(stored.profiles)[0];
+    if (!prof || prof.buttons.handbrake !== 1) fail(`input: handbrake binding not stored (${JSON.stringify(stored).slice(0, 200)})`);
+    await page.evaluate(() => {
+      window.__fakePad.axes[0] = 0.8; // stick right → sim steer negative
+      window.__fakePad.buttons[7] = { pressed: true, touched: true, value: 0.5 }; // RT half
+    });
+    await sleep(200);
+    const testText = await page.$eval('.test-view', (el) => el.textContent || '');
+    if (!/steer -0\.\d+/.test(testText)) fail(`input: live test panel wrong ("${testText}")`);
+    await shot(page, '15-input-settings.png');
+    await page.evaluate(() => (navigator.getGamepads = () => [null, null, null, null]));
+    log('input: settings screen, preset detection, binding and live panel ok');
 
     // ---- 8-car race for the fps probe ----------------------------------------------------------
     await selectTrackAndStart(page, base, { trackId: 'clubsprint', laps: 2, opponents: 7 });

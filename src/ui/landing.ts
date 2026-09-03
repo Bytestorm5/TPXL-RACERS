@@ -39,7 +39,7 @@ export function mountLanding(root: HTMLElement, session: Session, nav: Nav): Scr
         'p',
         { class: 'keys small muted' },
         'Quick race: your car vs five presets, 3 laps of Clubsprint. ',
-        'Drive with ↑/↓ (or W/S), steer ←/→ (or A/D), Space handbrake, E/Q shift, R reset, T telemetry, Esc pause.',
+        'Drive with ↑/↓ (or W/S), steer ←/→ (or A/D), Space handbrake, E/Q shift, R reset, T telemetry, Esc pause — or plug in a controller or steering wheel (Input in the top bar).',
       ),
     ),
   );

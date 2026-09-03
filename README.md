@@ -104,9 +104,14 @@ Units: the top bar switches between **Auto** (follows your locale: US â†’ mph, Â
 | Esc | pause menu: resume / restart / race setup / garage / quit |
 | F11 (desktop) | full screen |
 
-Gamepad (standard mapping): left stick steers, RT / LT (or A / B) drive and brake, X handbrake,
-RB / LB shift, Y camera, Back reset, Start pause menu. Garage and setup are ordinary focusable DOM:
-Tab / Enter / Space work on car and track cards.
+**Controllers and steering wheels** (*Input* in the top bar): Xbox / PlayStation pads work out of
+the box (left stick steers, triggers drive and brake, X handbrake, bumpers shift, Y camera, Back
+reset, Start menu, rumble on impacts and lockups). Wheels get a preset (Logitech G29 / G920 / G923,
+Thrustmaster, Fanatec) and a **setup wizard** that learns the wheel axis, each pedal's rest and
+full-travel values (inverted pedals just work), paddles, buttons and an H-pattern shifter; steering
+rotation range, dead zone and linearity are adjustable and everything is saved per device. The
+keyboard keeps working alongside. Force feedback is not available through the browser's Gamepad
+API. Garage and setup are ordinary focusable DOM: Tab / Enter / Space work on car and track cards.
 
 ## Tracks
 

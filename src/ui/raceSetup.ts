@@ -264,7 +264,7 @@ export function mountRaceSetup(root: HTMLElement, session: Session, nav: Nav): S
         h('div', { class: 'field-hint' }, 'Tyres and brakes start at working temperature (a formation-lap stand-in). Off: everything starts at ambient — cold slicks are treacherous on lap 1.'),
       ),
       h('button', { class: 'btn btn-primary btn-big', dataset: { action: 'start-race' }, onclick: start }, 'Start race'),
-      h('p', { class: 'small muted' }, 'Keyboard: ↑/W throttle · ↓/S brake · ←→/A D steer · Space handbrake · E/Q shift · C camera · R reset · T telemetry · Esc pause. Gamepad: left stick steers, triggers drive, bumpers shift, Y camera.'),
+      h('p', { class: 'small muted' }, 'Keyboard: ↑/W throttle · ↓/S brake · ←→/A D steer · Space handbrake · E/Q shift · C camera · R reset · T telemetry · Esc pause. Controllers and wheels: see Input in the top bar.'),
     ),
   );
   root.appendChild(el);
