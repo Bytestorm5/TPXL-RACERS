@@ -13,6 +13,7 @@
     "test:watch": "vitest"
   },
   "devDependencies": {
+    "playwright-core": "^1.49.1",
     "typescript": "^5.6.3",
     "vite": "^6.0.0",
     "vitest": "^3.0.0"
