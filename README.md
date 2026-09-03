@@ -113,9 +113,9 @@ Gravel Rally run on Dunes Rallycross with the cars airborne over the tabletop. S
 - **Camera** is north-up and translate-only (no heading-up rotation); zoom with + / −.
 - **Gaps between running cars** are a distance ÷ leader-speed estimate; only finished cars have exact
   gaps (shared race clock). Sectors are equal thirds of the lap by arc length, not authored splits.
-- **AI race starts are untidy**: in a full grid several cars run onto the grass in the first half
-  lap and the Track Weapon in particular can spin at the launch and lose a sector; from lap 2 on the
-  field settles (see `docs/notes/ui.md`, *Sim observations*).
+- **AI race starts** were tidied late in development (launch traction control, reduced pack
+  avoidance at low speed; a six-car Clubsprint start now keeps every car on the road in a probe),
+  but a full grid on cold tyres or on gravel can still be scrappy for the first sector.
 - **Delta to best** compares against your best lap of the *session* (progress-binned); the persisted
   record is a time only.
 - **No barriers or scenery**: a car more than 40 m beyond the track edge for 3 s is put back on the
