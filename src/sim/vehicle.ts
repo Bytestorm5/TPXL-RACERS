@@ -62,6 +62,8 @@ const LONG_ROOM_MARGIN = 0.97;
 const ABS_SLIP_FRACTION = 0.9;
 /** Settle substeps run by createVehicleState / resetVehicleState. */
 const SETTLE_SUBSTEPS = 240;
+/** Reported engine rpm saturates at limiter × this (the fuel cut). */
+const RPM_REPORT_OVERSHOOT = 1.03;
 /** Hull corners closer than this (m) to the local road plane are sampled for penetration. */
 const HULL_CHECK_CLEARANCE = 0.08;
 /** Beyond halfWidth + this (m) from the centreline the wheels reuse the CG road sample (plane). */
@@ -374,7 +376,13 @@ function settle(spec: VehicleSpec, state: VehicleState, road: RoadQuery): void {
     w.spinning = false;
     w.locked = false;
   }
+  const px = state.x;
+  const py = state.y;
+  const ph = state.heading;
   for (let i = 0; i < SETTLE_SUBSTEPS; i++) substep(spec, state, it, NEUTRAL_INPUT, road, MAX_SUBSTEP, true);
+  state.x = px;
+  state.y = py;
+  state.heading = ph;
   state.vx = 0;
   state.vy = 0;
   state.vz = 0;
@@ -506,10 +514,14 @@ export function stepVehicle(spec: VehicleSpec, state: VehicleState, input: Drive
   it.prevShiftUp = inp.shiftUp;
   it.prevShiftDown = inp.shiftDown;
   if (spec.drivetrain.autoShift && state.gear >= 1 && state.shiftTimer <= 0 && n > 0) {
-    // Shift on ROAD-speed rpm (output-shaft speed), not on a clutch-slipping or wheel-spinning engine.
-    const rad = 0.5 * (spec.tires.front.radius + spec.tires.rear.radius);
-    const roadRpm = Math.max(spec.engine.idleRpm, rpmFromWheelSpeed(spec.drivetrain, state.gear, Math.abs(state.vx) / Math.max(rad, 0.05)));
-    const g = autoShiftGear(spec.drivetrain, spec.engine, state.gear, roadRpm, state.throttleEffective);
+    // Shift on the output-shaft (driven-wheel) rpm like a real TCU — not on the launch clutch's held
+    // engine rpm. Wheelspin therefore triggers an upshift, which is what ends a burnout.
+    const split = clamp01(spec.drivetrain.frontTorqueSplit);
+    let omegaDriven = 0;
+    if (split > 1e-6) omegaDriven += split * 0.5 * (state.wheels[0].omega + state.wheels[1].omega);
+    if (split < 1 - 1e-6) omegaDriven += (1 - split) * 0.5 * (state.wheels[2].omega + state.wheels[3].omega);
+    const shiftRpm = Math.max(spec.engine.idleRpm, rpmFromWheelSpeed(spec.drivetrain, state.gear, omegaDriven));
+    const g = autoShiftGear(spec.drivetrain, spec.engine, state.gear, shiftRpm, state.throttleEffective);
     if (g !== state.gear) {
       state.gear = g;
       state.shiftTimer = spec.drivetrain.shiftTime;
@@ -837,6 +849,8 @@ function substep(spec: VehicleSpec, state: VehicleState, it: Internal, input: Dr
     let tEng = engineTorque(eng, rpm, thr);
     if (clutchSlip && tEng < 0) tEng = 0; // a slipping clutch does not transmit engine braking
     tTotal = tEng * ratio * clamp01(dtr.efficiency);
+    // The fuel cut holds a real engine at the limiter; slip-driven kinematic rpm above it is reported clamped.
+    if (rpm > eng.limiterRpm * RPM_REPORT_OVERSHOOT) rpm = eng.limiterRpm * RPM_REPORT_OVERSHOOT;
   } else {
     // Neutral or mid-shift: the engine free-spins against its own inertia.
     const tEng = engineTorque(eng, rpm, thr);
@@ -1244,7 +1258,7 @@ function substep(spec: VehicleSpec, state: VehicleState, it: Internal, input: Dr
   const tanTh = Math.tan(state.pitch);
   const dphi = p + (q * sr + r * cr) * tanTh;
   const dth = q * cr - r * sr;
-  const dpsi = (q * sr + r * cr) / (cp > 0.05 ? cp : 0.05);
+  const dpsi = settling ? 0 : (q * sr + r * cr) / (cp > 0.05 ? cp : 0.05);
   let roll = state.roll + dphi * dt;
   let pitch = state.pitch + dth * dt;
   let yaw = state.heading + dpsi * dt;

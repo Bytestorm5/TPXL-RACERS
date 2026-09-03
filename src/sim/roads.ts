@@ -136,6 +136,51 @@ export function flatRoad(opts: FlatRoadOptions = {}): RoadQuery {
   };
 }
 
+export interface BowlRoadOptions {
+  /** Radius (m) of the reference circle around the origin; travel is counter-clockwise (left turn). */
+  radius: number;
+  /** Bank (rad) for counter-clockwise travel: positive = outside (right side) higher. */
+  bank: number;
+  surface?: SurfaceKind;
+  /** Half-width (m) of the "track" (only affects onTrack / halfWidth in the sample). Default 8. */
+  halfWidth?: number;
+  ambientTemp?: number;
+  airDensity?: number;
+}
+
+/**
+ * A banked bowl: a cone z = (ρ − radius)·tan(bank) around the origin, so a car circling the
+ * origin counter-clockwise sees a constant bank (unlike `flatRoad({bank})`, whose plane is fixed
+ * in the world and turns into a grade once the car has turned). `s` is the arc length along the
+ * reference circle, `lateral` = radius − ρ (positive toward the centre = left of CCW travel),
+ * `trackHeading` the CCW tangent, `curvature` = 1/radius.
+ */
+export function bowlRoad(opts: BowlRoadOptions): RoadQuery {
+  const surface = surfaceProps(opts.surface ?? 'asphalt');
+  const R = Math.max(opts.radius, 1);
+  const tb = Math.tan(opts.bank);
+  const hw = opts.halfWidth ?? 8;
+  return {
+    ambientTemp: opts.ambientTemp ?? DEFAULT_AMBIENT_TEMP,
+    airDensity: opts.airDensity ?? AIR_DENSITY,
+    sampleAt(x: number, y: number, heading: number): RoadSample {
+      const rho = Math.hypot(x, y);
+      const ux = rho > 1e-9 ? x / rho : 1;
+      const uy = rho > 1e-9 ? y / rho : 0;
+      const gx = tb * ux;
+      const gy = tb * uy;
+      const ang = Math.atan2(y, x);
+      const s = ((ang < 0 ? ang + 2 * Math.PI : ang) * R) % (2 * Math.PI * R);
+      const smp = planeSample((rho - R) * tb, gx, gy, heading, surface, s, R - rho);
+      smp.onTrack = Math.abs(R - rho) <= hw;
+      smp.halfWidth = hw;
+      smp.trackHeading = Math.atan2(ux, -uy); // CCW tangent = (−uy, ux)
+      smp.curvature = 1 / R;
+      return smp;
+    },
+  };
+}
+
 export interface RampRoadOptions {
   /** x where the ramp starts (m). */
   rampStart: number;
