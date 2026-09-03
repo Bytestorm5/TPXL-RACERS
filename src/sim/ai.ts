@@ -37,7 +37,7 @@ import { brakeEffectiveness } from './brakes';
 import { overallRatio, rpmFromWheelSpeed, wheelTorqueCurve } from './drivetrain';
 import { clamp, clamp01, lerp, makeRng, wrapAngle } from './math';
 import { surfaceProps } from './surface';
-import { tireCamberFactors, tirePeakMu, tireTempFactor, tireWearFactor } from './tire';
+import { tireCamberFactors, tireCamberShape, tirePeakMu, tirePeakSlip, tireTempFactor, tireWearFactor } from './tire';
 import type { CompiledTrack } from './track';
 import { G } from './types';
 import type { DriverInput, SurfaceProps, TireSpec, VehicleSpec, VehicleState } from './types';
@@ -75,6 +75,12 @@ export interface AiDriver {
   mode?: AiMode;
   /** Speed target (m/s) after the last drive() call. */
   targetSpeed?: number;
+  /**
+   * Seconds the driver has been in recovery mode without moving (> 0 only when it has been trying for
+   * a while). A race manager may treat a large value (e.g. > 10 s) like a wreck and re-pose the car —
+   * some situations (cold slicks on a grassy slope) are physically hopeless.
+   */
+  stuckFor?: number;
   /** Forget controller state (call after re-posing the car). */
   reset?(): void;
 }
@@ -116,8 +122,16 @@ const BRAKE_USE = 0.9;
 const TEMP_BELOW_OPTIMAL = 15;
 /** Rollover threshold safety factor. */
 const ROLLOVER_FACTOR = 0.85;
+/**
+ * Steady-state lateral capacity → dynamic capability. Direction changes (esses, turn-in while the
+ * body is still rolling) load the outer front through the dampers and saturate it 10–15 % below the
+ * skidpad limit; the profile is a steady-state estimate, so it plans with this fraction of it.
+ */
+const DYNAMIC_FACTOR = 0.9;
 /** Engine force table resolution (m/s). */
 const ENGINE_TABLE_DV = 0.5;
+/** Steering input rate limit (full range per second). */
+const STEER_RATE = 4;
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -359,6 +373,11 @@ interface CarModel {
   rideR: number;
   /** Rollover lateral acceleration ratio (a_lat / a_normal) without downforce. */
   rollR0: number;
+  /** CG height above the roll axis (m). */
+  hRollArm: number;
+  /** Total roll stiffness (Nm/rad) and the front share of it. */
+  kRollTotal: number;
+  kRollShareF: number;
   /** Full-pedal brake force at the road (N), pads at full effectiveness. */
   brakeForceMax: number;
   /** Peak-over-gears full-throttle wheel force (N) vs speed, ENGINE_TABLE_DV steps from 0. */
@@ -417,6 +436,15 @@ function buildCarModel(spec: VehicleSpec): CarModel {
     }
   }
 
+  // Roll model: roll stiffness per axle (compile derives it; fall back to springs + bars).
+  const sus = spec.suspension;
+  const kF = sus.rollStiffnessFront > 0 ? sus.rollStiffnessFront : 0.5 * Math.max(sus.springRateFront, 0) * spec.trackFront * spec.trackFront + Math.max(sus.arbFront, 0);
+  const kR = sus.rollStiffnessRear > 0 ? sus.rollStiffnessRear : 0.5 * Math.max(sus.springRateRear, 0) * spec.trackRear * spec.trackRear + Math.max(sus.arbRear, 0);
+  const kRollTotal = kF + kR > 1000 ? kF + kR : 1000;
+  const wb = spec.wheelbase > 0.5 ? spec.wheelbase : 2.5;
+  const hRoll = lerp(sus.rollCentreFront, sus.rollCentreRear, clamp01(spec.cgToFront / wb));
+  const hRollArm = Math.max(cgH - (Number.isFinite(hRoll) ? hRoll : 0), 0.05);
+
   return {
     spec,
     m,
@@ -434,6 +462,9 @@ function buildCarModel(spec: VehicleSpec): CarModel {
     rideF: spec.suspension.rideHeightFront,
     rideR: spec.suspension.rideHeightRear,
     rollR0: (ROLLOVER_FACTOR * (trackMin / 2)) / cgH,
+    hRollArm,
+    kRollTotal,
+    kRollShareF: kF / kRollTotal,
     brakeForceMax,
     engineForce,
     driveSplit: split,
@@ -518,30 +549,69 @@ function profileGeometry(track: CompiledTrack): ProfileGeometry {
   return { n, closed, step, surf, bank, grade, kv, z };
 }
 
-/** Bounded-QP style lateral speed limit at one sample (see module header). */
+/** Lateral grip multiplier for a camber (1 + camberGain·g), allocation-free. */
+function camberLatFactor(tire: TireSpec, camber: number): number {
+  const cg = Number.isFinite(tire.camberGain) ? tire.camberGain : 0;
+  const f = 1 + cg * tireCamberShape(tire, camber);
+  return f > 0 ? f : 0;
+}
+
+/**
+ * Lateral capacity of one axle (N) at body-frame lateral acceleration `ay`: the roll-stiffness share
+ * of the load transfer plus the roll-centre (jacking) share move load to the outer wheel, the body
+ * roll adds camber to both wheels (outer toward positive), and each wheel's load-sensitive peak mu
+ * comes from `tirePeakMu`.
+ */
+function axleLatCapacity(car: CarModel, tire: TireSpec, temp: number, surface: SurfaceProps, nAxle: number, ay: number, roll: number, kShare: number, rc: number, track: number, weightShare: number): number {
+  if (!(nAxle > 0)) return 0;
+  const dN = (car.m * ay * (car.hRollArm * kShare) + car.m * ay * weightShare * rc) / track;
+  const half = 0.5 * nAxle;
+  const outer = half + Math.min(dN, half * 0.98);
+  const inner = Math.max(nAxle - outer, 0);
+  const muO = tirePeakMu(tire, outer, temp, 0, tire.camber, surface) * camberLatFactor(tire, tire.camber + roll);
+  const muI = inner > 0 ? tirePeakMu(tire, inner, temp, 0, tire.camber, surface) * camberLatFactor(tire, tire.camber - roll) : 0;
+  return muO * outer + muI * inner;
+}
+
+/** Steady-state lateral speed limit at one sample (see module header). */
 function lateralLimit(car: CarModel, geo: ProfileGeometry, i: number, kLine: number, gripUsage: number, airDensity: number): number {
   const k = Math.abs(kLine);
   if (!(k > 1e-5)) return AI_V_MAX;
   const phi = geo.bank[i] * (kLine > 0 ? 1 : -1); // + = bank helps this turn
   const sinP = Math.sin(phi);
   const cosP = Math.cos(phi);
-  const cosG = Math.cos(geo.grade[i]);
+  const grade = geo.grade[i];
+  const cosG = Math.cos(grade);
   const kvNeg = Math.min(geo.kv[i], 0);
   const surface = geo.surf[i];
-  const hOverT = car.spec.cgHeight / Math.max(0.5, Math.min(car.spec.trackFront, car.spec.trackRear));
+  const sus = car.spec.suspension;
+  const trackF = Math.max(car.spec.trackFront, 0.5);
+  const trackR = Math.max(car.spec.trackRear, 0.5);
+  const wF = car.sF / car.W;
+  const wR = car.sR / car.W;
   let v = Math.min(AI_V_MAX, Math.sqrt(G / k));
-  let mu = 1;
+  let mu = 0.8;
   for (let it = 0; it < 6; it++) {
     const a = aeroAt(car, v, airDensity);
     const NF = car.sF + a.downFront;
     const NR = car.sR + a.downRear;
-    const x = clamp(mu * hOverT, 0, 0.9);
-    const muF = axleMu(car.tireF, car.tempF, surface, NF, x) * car.camLatF;
-    const muR = axleMu(car.tireR, car.tempR, surface, NR, x) * car.camLatR;
-    const muEff = (gripUsage * (muF * NF + muR * NR)) / car.W;
-    const roll = car.rollR0 * (1 + (a.downFront + a.downRear) / car.W);
-    mu = Math.min(muEff, roll);
     const gN = Math.max(G * cosG + v * v * kvNeg, 0.3 * G);
+    // body-frame lateral acceleration the tyres must react at this mu, and the body roll it causes
+    const ay = mu * gN;
+    const roll = clamp((car.m * ay * car.hRollArm) / car.kRollTotal, 0, 0.2);
+    const capF = axleLatCapacity(car, car.tireF, car.tempF, surface, NF, ay, roll, car.kRollShareF, sus.rollCentreFront, trackF, wF);
+    const capR = axleLatCapacity(car, car.tireR, car.tempR, surface, NR, ay, roll, 1 - car.kRollShareF, sus.rollCentreRear, trackR, wR);
+    // friction-ellipse room after the longitudinal force needed just to hold this speed here
+    const fHold = Math.abs(a.drag + car.m * (G * Math.sin(grade) + Math.max(surface.drag, 0) * v + (car.rollingCoeff + Math.max(surface.rollingResistance, 0)) * G));
+    const capTot = capF + capR;
+    const room = capTot > 1 ? Math.sqrt(Math.max(0.1, 1 - (fHold / capTot) * (fHold / capTot))) : 1;
+    // each axle must react its share of the inertial force (by weight distribution)
+    const ayF = capF > 0 && wF > 0 ? (capF * room) / (car.m * wF) : 0;
+    const ayR = capR > 0 && wR > 0 ? (capR * room) / (car.m * wR) : 0;
+    const muGrip = (gripUsage * DYNAMIC_FACTOR * Math.min(ayF, ayR)) / G;
+    const rollOver = car.rollR0 * (1 + (a.downFront + a.downRear) / car.W);
+    const muNew = Math.min(muGrip, rollOver);
+    mu = 0.5 * (mu + muNew);
     const num = sinP + mu * cosP;
     const den = cosP - mu * sinP;
     let vNew: number;
@@ -678,6 +748,8 @@ export interface SpeedProfileParts {
    * the tyres' actual grip (temperature, wear); the final profile does not where the engine limits.
    */
   gripLimited: Float32Array;
+  /** Pure cornering limit per sample (lateral grip / bank / rollover / crest caps only). */
+  lateral: Float32Array;
 }
 
 /**
@@ -692,7 +764,8 @@ export function computeSpeedProfileParts(spec: VehicleSpec, track: CompiledTrack
   const n = track.samples.length;
   const out = new Float32Array(n);
   const gripOut = new Float32Array(n);
-  if (n === 0) return { profile: out, gripLimited: gripOut };
+  const latOut = new Float32Array(n);
+  if (n === 0) return { profile: out, gripLimited: gripOut, lateral: latOut };
   const gu = Number.isFinite(gripUsage) ? clamp(gripUsage, 0.3, 1.2) : 0.9;
   const car = buildCarModel(spec);
   const geo = profileGeometry(track);
@@ -701,7 +774,8 @@ export function computeSpeedProfileParts(spec: VehicleSpec, track: CompiledTrack
   if (n < 3) {
     out.fill(AI_V_MIN);
     gripOut.fill(AI_V_MIN);
-    return { profile: out, gripLimited: gripOut };
+    latOut.fill(AI_V_MIN);
+    return { profile: out, gripLimited: gripOut, lateral: latOut };
   }
 
   // 1. lateral limits
@@ -758,6 +832,10 @@ export function computeSpeedProfileParts(spec: VehicleSpec, track: CompiledTrack
       }
     }
   };
+  for (let i = 0; i < n; i++) {
+    const x = v[i];
+    latOut[i] = Number.isFinite(x) ? clamp(x, AI_V_MIN, AI_V_MAX) : AI_V_MIN;
+  }
   backward();
   for (let i = 0; i < n; i++) {
     const x = v[i];
@@ -770,7 +848,7 @@ export function computeSpeedProfileParts(spec: VehicleSpec, track: CompiledTrack
     const x = v[i];
     out[i] = Number.isFinite(x) ? clamp(x, AI_V_MIN, AI_V_MAX) : AI_V_MIN;
   }
-  return { profile: out, gripLimited: gripOut };
+  return { profile: out, gripLimited: gripOut, lateral: latOut };
 }
 
 /**
@@ -783,11 +861,41 @@ export function computeSpeedProfile(spec: VehicleSpec, track: CompiledTrack, gri
   return computeSpeedProfileForLine(spec, track, line, gripUsage);
 }
 
-/** Estimated lap (circuit) or stage time (s): ∫ ds / v along the racing line. */
+/**
+ * Estimated lap (circuit) or stage time (s): ∫ ds / v along the racing line, plus the gearbox's
+ * torque-cut time for every upshift the profile implies (the speed rising through a gear's limiter
+ * speed) — a 5-speed manual loses ~5 s a lap to shifts that a 6-speed auto does not.
+ */
 export function estimateLapTime(spec: VehicleSpec, track: CompiledTrack, gripUsage: number): number {
   const line = racingLineFor(track, lineMargin(spec));
   const profile = computeSpeedProfileForLine(spec, track, line, gripUsage);
-  return integrateTime(track, line, profile);
+  return integrateTime(track, line, profile) + shiftTimeLoss(spec, track, profile);
+}
+
+/** Total torque-cut time (s) for the upshifts implied by a speed profile. */
+function shiftTimeLoss(spec: VehicleSpec, track: CompiledTrack, profile: Float32Array): number {
+  const dtr = spec.drivetrain;
+  const gears = dtr.gearRatios.length;
+  if (gears < 2 || !(dtr.shiftTime > 0)) return 0;
+  const car = buildCarModel(spec);
+  const rDrive = car.radius;
+  // upshift speeds: 96 % of each lower gear's limiter speed (the driver's shift point)
+  const shiftSpeeds: number[] = [];
+  for (let g = 1; g < gears; g++) {
+    const curve = wheelTorqueCurve(dtr, spec.engine, g, rDrive);
+    if (curve.length >= 2) shiftSpeeds.push(0.96 * curve[curve.length - 1][0]);
+  }
+  const n = profile.length;
+  const closed = isClosed(track);
+  let shifts = 0;
+  const last = closed ? n : n - 1;
+  for (let i = 0; i < last; i++) {
+    const a = profile[i];
+    const b = profile[(i + 1) % n];
+    if (b <= a) continue;
+    for (const vs of shiftSpeeds) if (a < vs && b >= vs) shifts++;
+  }
+  return shifts * dtr.shiftTime;
 }
 
 function integrateTime(track: CompiledTrack, line: RacingLine, profile: Float32Array): number {
@@ -861,7 +969,7 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
   const rDriven = car.radius;
   const lookTime = lerp(1.2, 0.6, skill);
   const tcReduction = 0.4 * (0.5 + 0.5 * skill);
-  const brakeCapSkill = 0.82 + 0.15 * skill;
+  const brakeCapSkill = 0.75 + 0.15 * skill;
   /** Temperature factors the profile assumed (reference for the live grip scale). */
   const refTempF = Math.max(tireTempFactor(car.tireF, car.tempF), 0.05);
   const refTempR = Math.max(tireTempFactor(car.tireR, car.tempR), 0.05);
@@ -886,8 +994,16 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
   let shiftCooldown = 0;
   let targetSpeed = 0;
   let gripScale = 1;
+  let recoverStuck = 0;
+  let hillStart = 0;
+  let hillStarts = 0;
+  let stuckFor = 0;
 
   const reset = (): void => {
+    recoverStuck = 0;
+    hillStart = 0;
+    hillStarts = 0;
+    stuckFor = 0;
     hintS = undefined;
     mode = 'normal';
     stuckTime = 0;
@@ -941,7 +1057,8 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
     const w = state.wheels;
     const fF = (0.5 * (tireTempFactor(car.tireF, w[0].tire.temp) * tireWearFactor(car.tireF, w[0].tire.wear) + tireTempFactor(car.tireF, w[1].tire.temp) * tireWearFactor(car.tireF, w[1].tire.wear))) / refTempF;
     const fR = (0.5 * (tireTempFactor(car.tireR, w[2].tire.temp) * tireWearFactor(car.tireR, w[2].tire.wear) + tireTempFactor(car.tireR, w[3].tire.temp) * tireWearFactor(car.tireR, w[3].tire.wear))) / refTempR;
-    const r = (fF * car.sF + fR * car.sR) / car.W;
+    // the colder axle is the one that gives up first
+    const r = Math.min(fF, fR);
     return Number.isFinite(r) ? clamp(r, 0.5, 1.1) : 1;
   };
 
@@ -979,18 +1096,28 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
     const muF = axleMu(car.tireF, car.tempF, surface, car.sF + a.downFront, 0) * car.camLongF * scale;
     const muR = axleMu(car.tireR, car.tempR, surface, car.sR + a.downRear, 0) * car.camLongR * scale;
     const gN = Math.max(Math.cos(state.road.gradeAlong), 0.5);
-    const decel = ((muF * (car.sF + a.downFront) + muR * (car.sR + a.downRear)) / car.W) * G * gN;
+    // friction-ellipse room left by the current cornering (trail braking locks the loaded front early)
+    const latUse = clamp(Math.abs(state.ay) / Math.max((Math.max(muF, muR) * G * gN) / Math.max(scale, 0.3), 0.5), 0, 0.95);
+    const room = Math.sqrt(1 - latUse * latUse);
+    const decel = ((muF * (car.sF + a.downFront) + muR * (car.sR + a.downRear)) / car.W) * G * gN * room;
     const dN = (car.m * decel * spec.cgHeight) / wheelbase;
-    const capF = muF * (car.sF + a.downFront + dN) * gN;
-    const capR = muR * Math.max(car.sR + a.downRear - dN, 0) * gN;
+    const capF = muF * (car.sF + a.downFront + dN) * gN * room;
+    const capR = muR * Math.max(car.sR + a.downRear - dN, 0) * gN * room;
     const lp = brakeLinePressures(spec.brakes.bias, spec.brakes.front.maxTorque, spec.brakes.rear.maxTorque);
     const effF = 0.5 * (brakeEffectiveness(spec.brakes.front, state.wheels[0].brake.temp) + brakeEffectiveness(spec.brakes.front, state.wheels[1].brake.temp));
     const effR = 0.5 * (brakeEffectiveness(spec.brakes.rear, state.wheels[2].brake.temp) + brakeEffectiveness(spec.brakes.rear, state.wheels[3].brake.temp));
     const demF = (2 * spec.brakes.front.maxTorque * lp.front * Math.max(effF, 0.05)) / Math.max(car.tireF.radius, 0.05);
     const demR = (2 * spec.brakes.rear.maxTorque * lp.rear * Math.max(effR, 0.05)) / Math.max(car.tireR.radius, 0.05);
-    const pF = demF > 1 ? capF / demF : 1;
-    const pR = demR > 1 ? capR / demR : 1;
-    return clamp(Math.min(pF, pR) * brakeCapSkill, 0.25, 1);
+    // engine braking on the driven axle(s) eats into their braking capacity before the pedal does
+    const ratio = Math.abs(overallRatio(dtr, state.gear));
+    const ebWheel = (Math.max(eng.engineBrakingTorque, 0) * clamp(state.engineRpm / Math.max(eng.redlineRpm, 1), 0, 1.5) * ratio * clamp01(dtr.efficiency)) / rDriven;
+    const ebF = ebWheel * clamp01(dtr.frontTorqueSplit);
+    const ebR = ebWheel * (1 - clamp01(dtr.frontTorqueSplit));
+    // the INNER wheel of the turn carries (1 − x)/2 of its axle but still gets half the torque
+    const xLat = clamp((Math.abs(state.ay) * spec.cgHeight) / (0.5 * Math.max(Math.min(spec.trackFront, spec.trackRear), 0.5) * G), 0, 0.8);
+    const pF = demF > 1 ? Math.max((1 - xLat) * capF - ebF, 0) / demF : 1;
+    const pR = demR > 1 ? Math.max((1 - xLat) * capR - ebR, 0) / demR : 1;
+    return clamp(Math.min(pF, pR) * brakeCapSkill, 0.12, 1);
   };
 
   /** Manual gearbox: shift edges from the road-speed rpm (never from a spinning wheel). Gear must be ≥ 1. */
@@ -1060,6 +1187,9 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
       reverseMode = false;
       reverseAttempts = 0;
       stuckTime = 0;
+      recoverStuck = 0;
+      hillStart = 0;
+      hillStarts = 0;
     }
     if (mode === 'recover') {
       recoverTime += h;
@@ -1083,9 +1213,12 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
 
     // --- recovery --------------------------------------------------------------------------------
     if (mode === 'recover') {
-      const La = Math.max(12, 2 * Math.abs(lateral));
+      // rejoin point: a bounded distance along the track so a car far off the track still sees it at
+      // a steep angle (a target 2×|lateral| ahead made pure pursuit drive parallel to the track)
+      const La = clamp(12 + 0.3 * Math.abs(lateral), 12, 30);
       const tp = poseAhead(s + La, 0);
       const ang = wrapAngle(Math.atan2(tp.y - state.y, tp.x - state.x) - state.heading);
+      stuckFor = speed < 1 && recoverTime > 6 ? stuckFor + h : Math.max(0, stuckFor - h);
       if (reverseMode) {
         reverseTime += h;
         if (Math.abs(ang) < 1.0 || reverseTime > 5) {
@@ -1128,7 +1261,8 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
         return output(0, brake, steerFor(delta, speed));
       }
       const dist = Math.max(Math.hypot(tp.x - state.x, tp.y - state.y), 3);
-      const delta = Math.abs(ang) > Math.PI / 2 ? Math.sign(ang) * 1.5 : Math.atan2(2 * wheelbase * Math.sin(ang), dist);
+      // far from the target: point the nose at it (heading control); close: pure pursuit
+      const delta = Math.abs(ang) > Math.PI / 2 ? Math.sign(ang) * 1.5 : dist > 25 ? clamp(ang, -0.6, 0.6) : Math.atan2(2 * wheelbase * Math.sin(ang), dist);
       const steer = steerFor(delta, speed);
       const vTarget = 7;
       const e = vTarget - speed;
@@ -1136,7 +1270,34 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
       let brake = 0;
       if (e > 0) throttle = clamp(0.3 + 0.1 * e, 0, 0.6);
       else if (e < -1) brake = clamp(-0.3 * e, 0, 1);
-      if (anyDrivenSpinning(state)) throttle *= 0.5;
+      // Not moving although we are pushing. On a slope the car creeps backwards a few cm/s and the
+      // vehicle model then treats forward drive torque as engine braking (hill-start deadlock, see
+      // docs/notes/ai.md): hold the brake until the static-friction hold zeroes the speed, then go.
+      // If that fails too, try backing out.
+      if (hillStart > 0) {
+        hillStart -= h;
+        return output(0, 1, steer);
+      }
+      if (speed < 0.5 && lastThrottle > 0.2) recoverStuck += h;
+      else recoverStuck = Math.max(0, recoverStuck - h);
+      if (recoverStuck > 2 && hillStarts < 3) {
+        hillStart = 0.6;
+        hillStarts++;
+        recoverStuck = 0;
+        return output(0, 1, steer);
+      }
+      if (hillStarts > 0 && recoverStuck < 3) throttle = Math.max(throttle, 0.8);
+      if (recoverStuck > 3 && reverseAttempts < 4) {
+        reverseMode = true;
+        reverseTime = 0;
+        reverseAttempts++;
+        recoverStuck = 0;
+        hillStarts = 0;
+        return output(0, 1, 0);
+      }
+      if (anyDrivenSpinning(state)) tcScale = Math.max(0.06, Math.min(tcScale, 1 - tcReduction) - 4 * h);
+      else tcScale = Math.min(1, tcScale + 0.5 * h);
+      throttle *= tcScale;
       targetSpeed = vTarget;
       const shifts = manualShift(state);
       return output(throttle, brake, steer, shifts.up, shifts.down);
@@ -1191,9 +1352,13 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
     let delta: number;
     if (Math.abs(alpha) > Math.PI / 2) delta = Math.sign(alpha) * 1.5;
     else delta = Math.atan2(2 * wheelbase * Math.sin(alpha), dist);
-    const kHere = sampleArray(track, line.curvature, s);
-    delta += -0.05 * (state.yawRate - vx * kHere);
-    delta += 0.5 * beta;
+    // yaw damping toward the yaw rate the pursuit arc itself asks for (NOT the path's: when the car is
+    // off the line it legitimately needs more yaw to come back); also unwinds the counter-steer as a
+    // slide reverses
+    const kPursuit = Math.abs(alpha) > Math.PI / 2 ? Math.sign(alpha) / (0.5 * wheelbase) : (2 * Math.sin(alpha)) / dist;
+    delta += -0.3 * (state.yawRate - vx * kPursuit);
+    // slip term: point the wheels where pure pursuit wants them relative to the COURSE
+    delta += 0.3 * beta;
     const turnSign = delta >= 0 ? 1 : -1;
 
     // rollover awareness: inner wheels lifting with the body rolled → unwind the steer, lift
@@ -1204,8 +1369,15 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
       delta *= 0.3;
       rolloverSave = true;
     }
+    // hands are quick but not instantaneous: first-order lag plus a rate limit (full lock in 0.25 s)
     const steerRaw = steerFor(delta, speed);
-    steerFiltered += (steerRaw - steerFiltered) * Math.min(1, h / 0.04);
+    const maxStep = STEER_RATE * h;
+    let steerStep = clamp((steerRaw - steerFiltered) * Math.min(1, h / 0.04), -maxStep, maxStep);
+    // understeer: the fronts are saturated — cranking in more lock only winds up a snap when grip
+    // returns, so hold what we have (unwinding is always allowed)
+    const frontSat = Math.max(state.wheels[0].utilisation, state.wheels[1].utilisation) > 0.98;
+    if (frontSat && speed > 5 && Math.sign(steerStep) === Math.sign(steerFiltered) && Math.abs(steerFiltered) > 0.15) steerStep = 0;
+    steerFiltered += steerStep;
     const steer = steerFiltered;
 
     // speed control from the profile (grip-scaled by the tyres' actual condition)
@@ -1218,12 +1390,24 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
     if (e > -0.5) throttle = clamp(holdThrottle(speed, state.road.gradeAlong, state.road.surface) + 0.45 * e, 0, 1);
     else brake = clamp(-0.28 * e, 0, 1);
     // crude traction control: cut on the first spin, keep cutting while it lasts, recover slowly
-    if (anyDrivenSpinning(state)) tcScale = Math.max(0.25, Math.min(tcScale, 1 - tcReduction) - 2.5 * h);
+    // (slicks on cold gravel spin at a few % throttle — the floor must be low)
+    if (anyDrivenSpinning(state)) tcScale = Math.max(0.06, Math.min(tcScale, 1 - tcReduction) - 4 * h);
     else tcScale = Math.min(1, tcScale + 0.5 * h);
     throttle *= tcScale;
-    // oversteer catch: rotating faster than the path needs → lift (the course-based steer already counter-steers)
-    const yawExcess = state.yawRate * turnSign - Math.abs(vx * kHere);
-    if (yawExcess > 0.3 && speed > 5) throttle *= 0.3;
+    // slide catch: yawing much faster than the path needs, or a body slip angle beyond what this
+    // surface's tyres want (loose surfaces like big angles) → lift; the steer already counter-steers
+    const yawExcess = Math.abs(state.yawRate) - Math.max(Math.abs(vx * kPursuit), Math.abs(vx * sampleArray(track, line.curvature, s)));
+    const betaOk = 0.6 * tirePeakSlip(car.tireR, state.road.surface).slipAngle + 0.05;
+    if (speed > 5 && (yawExcess > 0.35 || Math.abs(beta) > betaOk)) throttle *= 0.25;
+    // mid-corner throttle cap: the closer to the real lateral limit, the less longitudinal force the
+    // tyres have left (the planner's target may still ask for acceleration — that is for the exit)
+    const vLatHere = sampleArray(track, parts.lateral, s) * Math.sqrt(gripScale);
+    if (vLatHere < AI_V_MAX && speed > 3) {
+      const latUse = clamp(((speed * speed) / (vLatHere * vLatHere)) * gripUsage * DYNAMIC_FACTOR, 0, 1.2);
+      throttle = Math.min(throttle, clamp(1.15 - latUse * latUse, 0.2, 1));
+    }
+    // a saturated steering command means the car is at its handling limit — do not add power
+    if (speed > 8) throttle = Math.min(throttle, clamp(1.35 - Math.abs(steer), 0.25, 1));
     // threshold / cadence braking without ABS
     if (brake > 0) {
       brake = Math.min(brake, brakePedalLimit(state));
@@ -1257,5 +1441,6 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
   // keep the telemetry fields live
   Object.defineProperty(driver, 'mode', { get: () => mode, enumerable: true });
   Object.defineProperty(driver, 'targetSpeed', { get: () => targetSpeed, enumerable: true });
+  Object.defineProperty(driver, 'stuckFor', { get: () => stuckFor, enumerable: true });
   return driver;
 }
