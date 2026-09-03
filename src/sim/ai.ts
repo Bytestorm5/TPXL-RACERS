@@ -1000,6 +1000,8 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
   let stuckFor = 0;
   /** Throttle the speed controller asked for BEFORE traction control (stuck detection must not be blinded by the TC cut). */
   let throttleDemand = 0;
+  /** Seconds this driver has been driving (race start handling: gentle launch, tame avoidance in the pack). */
+  let driveTime = 0;
 
   const reset = (): void => {
     recoverStuck = 0;
@@ -1160,6 +1162,7 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
 
   const drive = (state: VehicleState, others: ReadonlyArray<VehicleState>, dt: number): DriverInput => {
     const h = Number.isFinite(dt) && dt > 0 ? dt : 1 / 120;
+    driveTime += h;
     if (shiftCooldown > 0) shiftCooldown = Math.max(0, shiftCooldown - h);
     if (lockLatch > 0) lockLatch = Math.max(0, lockLatch - h);
 
@@ -1189,7 +1192,9 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
     gripScale += (gripScaleNow(state) - gripScale) * Math.min(1, h / 0.5);
 
     // --- mode management --------------------------------------------------------------------
-    if (!state.airborne && speed < 1.5 && Math.max(lastThrottle, throttleDemand) > 0.3 && Math.abs(state.ax) < 1.0) stuckTime += h;
+    // pushing but not moving — or pinned against a neighbour, crawling with the wheel on full lock
+    const pinned = speed < 1.5 && Math.abs(steerFiltered) > 0.9 && driveTime > 3;
+    if (!state.airborne && speed < 1.5 && ((Math.max(lastThrottle, throttleDemand) > 0.3 && Math.abs(state.ax) < 1.0) || pinned)) stuckTime += pinned ? 0.67 * h : h;
     else stuckTime = Math.max(0, stuckTime - 2 * h);
     const offTrackFar = Math.abs(lateral) > hw + 3;
     const spun = Math.abs(headingErr) > (120 * Math.PI) / 180 && !state.airborne;
