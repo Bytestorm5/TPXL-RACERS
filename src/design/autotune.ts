@@ -194,10 +194,10 @@ function withBias(spec: VehicleSpec, bias: number): VehicleSpec {
 }
 
 /**
- * Brake bias: with the proportioning-valve semantics (front line pressure = min(1, 2·bias), rear =
- * min(1, 2·(1 − bias))), find the bias where both axles reach their capacity at the same
- * deceleration, using the same quasi-static loads as analyze. The result is then biased 2 % toward
- * the front for safety (rear axle at 98 % of the front's utilisation) unless intent is 'drift'.
+ * Brake bias: `bias` is the front share of the total brake torque (bias bar), so the balanced value
+ * is essentially the front axle's share of the tyre capacity at the braking limit — found by
+ * bisection on `analyzeLockup` (the same quasi-static loads analyze uses) for rear/front utilisation
+ * = 0.98 (2 % toward the front for safety) or exactly 1.0 for `drift`.
  */
 function tuneBrakeBias(build: CarBuild, intent: HandlingIntent, log: ChangeLog): void {
   const spec = compileBuild(build);
@@ -208,40 +208,12 @@ function tuneBrakeBias(build: CarBuild, intent: HandlingIntent, log: ChangeLog):
   };
   const r = FIELD_RANGES['brakes.bias'];
   let bias = solveMonotonic(ratioAt, target, r.min, r.max, 30);
-  let result = analyzeLockup(withBias(spec, snapToRange('brakes.bias', bias)));
-  let activeSpec = spec;
+  let result: ReturnType<typeof analyzeLockup>;
+  const activeSpec = spec;
 
-  // Bias pinned at its maximum with the rear still locking first: the rear discs are simply too
-  // big for this car. Brake torque is linear in disc diameter, so shrink the rear disc until the
-  // balance point lands at bias ≈ 0.8 (rear line pressure 0.4), then solve the bias again.
-  if (bias >= r.max - 1e-9 && result.utilRear > result.utilFront * (target + 0.01)) {
-    const discR = FIELD_RANGES['brakes.discRear'];
-    const pRearMax = Math.min(1, 2 * (1 - r.max));
-    const pRearWanted = 0.4;
-    const ratioNow = ratioAt(r.max);
-    const factor = (target / ratioNow) * (pRearMax / pRearWanted);
-    const wanted = Math.max(discR.min, build.brakes.discRear * factor);
-    if (wanted < build.brakes.discRear - discR.step / 2) {
-      log.setNumber(
-        build,
-        'brakes.discRear',
-        Math.floor(wanted / discR.step) * discR.step,
-        `the bias alone cannot stop the rear from locking first even at its maximum: the rear discs were too big for the grip the rear axle has under braking, so they are reduced to bring the balance point into the bias range`,
-      );
-      activeSpec = compileBuild(build);
-      const spec2 = activeSpec;
-      const ratioAt2 = (b: number): number => {
-        const l = analyzeLockup(withBias(spec2, b));
-        return l.utilFront > 0 ? l.utilRear / l.utilFront : Number.POSITIVE_INFINITY;
-      };
-      bias = solveMonotonic(ratioAt2, target, r.min, r.max, 30);
-    }
-  }
-
-  // Snap onto the 0.01 grid. Near bias 0.8 one grid step moves the rear line pressure by ~5 %,
-  // wider than the 4 % 'balanced' window, so evaluate both grid neighbours of the root and keep
-  // (1) a balanced one, preferring front-first unless drifting, else (2) the front-first one closest
-  // to the target, else (3) the closest.
+  // Snap onto the slider grid. One 0.005 step is ~2 % of the rear torque near bias 0.78, so evaluate
+  // both grid neighbours of the root and keep (1) a balanced one, preferring front-first unless
+  // drifting, else (2) the front-first one closest to the target, else (3) the closest.
   {
     const lo = snapToRange('brakes.bias', Math.floor((bias - r.min) / r.step + 1e-9) * r.step + r.min);
     const hi = snapToRange('brakes.bias', Math.ceil((bias - r.min) / r.step - 1e-9) * r.step + r.min);
@@ -272,9 +244,9 @@ function tuneBrakeBias(build: CarBuild, intent: HandlingIntent, log: ChangeLog):
 
   const edge =
     bias <= r.min + 1e-9
-      ? ' (at the minimum of the range: the rear brakes are weak for this car — bigger rear discs would help)'
+      ? ' (at the minimum of the range: this rear-heavy, low car could use even more rear braking)'
       : bias >= r.max - 1e-9
-        ? ' (at the maximum of the range: the rear brakes are still strong for this car)'
+        ? ' (at the maximum of the range: the rear axle has almost no grip left under hard braking — a lower centre of gravity or a longer wheelbase would help)'
         : '';
   const achieved = result.utilFront > 0 ? result.utilRear / result.utilFront : 1;
   log.setNumber(

@@ -449,8 +449,8 @@ export const FIELD_RANGES: Record<string, FieldRange> = {
     hint: 'Bigger discs give more braking torque and soak up more heat before fading — but they must fit inside the rim (rim inches × 25.4 − 60 mm) and add unsprung mass.',
   },
   'brakes.bias': {
-    min: 0.4, max: 0.85, step: 0.01, unit: '', label: 'Brake bias (front)',
-    hint: 'Share of braking on the front axle. Braking throws weight forward, so the front can take more — but too much front locks the fronts (plough straight on), too little locks the rears (spin).',
+    min: 0.5, max: 0.9, step: 0.005, unit: '', label: 'Brake bias (front)',
+    hint: 'Front share of the total braking torque (0.75 = three quarters of the braking on the front axle). Braking throws weight forward, so the front can take more — too much front locks the fronts (plough straight on), too little locks the rears (spin). Balanced is roughly the front axle\'s share of the load under hard braking.',
   },
   'brakes.ducts': {
     min: 0, max: 1, step: 0.1, unit: '', label: 'Brake cooling ducts',

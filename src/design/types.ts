@@ -119,7 +119,7 @@ export interface CarBuild {
     discFront: number;
     discRear: number;
     pads: PadCompound;
-    /** Front bias 0.4..0.85. */
+    /** Front share of the total brake torque (bias bar), 0.5..0.9. */
     bias: number;
     abs: boolean;
     /** Brake cooling ducts 0..1. */

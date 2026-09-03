@@ -406,10 +406,25 @@ export function analyzeHandling(spec: VehicleSpec): HandlingAnalysis {
 // Braking: lockup sweep, stopping distance, repeated-stop thermal test
 // ---------------------------------------------------------------------------
 
-/** Proportioning valve: line pressure per axle for a front bias. */
-export function brakeLinePressures(bias: number): { front: number; rear: number } {
+/**
+ * Bias bar: `bias` is the front share of the TOTAL brake torque. The stronger side gets full line
+ * pressure and the other side is reduced so that front/(front + rear) torque = bias exactly:
+ *   neutral = mF / (mF + mR)
+ *   bias ≥ neutral → front 1,  rear  ((1 − bias)/bias) × mF/mR
+ *   bias <  neutral → rear  1,  front (bias/(1 − bias)) × mR/mF
+ * with mF/mR the axles' `maxTorque`. Per-wheel torque = maxTorque × pedal × pressure × effectiveness.
+ * sim/vehicle.ts implements the identical rule (kept separate: the designer never imports the sim).
+ */
+export function brakeLinePressures(bias: number, maxTorqueFront: number, maxTorqueRear: number): { front: number; rear: number } {
   const b = clamp(finite(bias, 0.5), 0, 1);
-  return { front: Math.min(1, 2 * b), rear: Math.min(1, 2 * (1 - b)) };
+  const mF = finite(maxTorqueFront, 0) > 0 ? maxTorqueFront : 0;
+  const mR = finite(maxTorqueRear, 0) > 0 ? maxTorqueRear : 0;
+  if (mF <= 0 && mR <= 0) return { front: 0, rear: 0 };
+  if (b >= 1 || mR <= 0) return { front: 1, rear: 0 };
+  if (b <= 0 || mF <= 0) return { front: 0, rear: 1 };
+  const neutral = mF / (mF + mR);
+  if (b >= neutral) return { front: 1, rear: clamp(((1 - b) / b) * (mF / mR), 0, 1) };
+  return { front: clamp((b / (1 - b)) * (mR / mF), 0, 1), rear: 1 };
 }
 
 /**
@@ -417,7 +432,7 @@ export function brakeLinePressures(bias: number): { front: number; rear: number 
  * multiply by the effectiveness at the current disc temperature to get the demand.
  */
 function axleDemandCoef(c: CarModel, axle: 'front' | 'rear'): number {
-  const p = brakeLinePressures(c.spec.brakes.bias);
+  const p = brakeLinePressures(c.spec.brakes.bias, c.spec.brakes.front.maxTorque, c.spec.brakes.rear.maxTorque);
   const b = axle === 'front' ? c.spec.brakes.front : c.spec.brakes.rear;
   const a = axle === 'front' ? c.front : c.rear;
   return (2 * Math.max(b.maxTorque, 0) * (axle === 'front' ? p.front : p.rear)) / a.radius;
