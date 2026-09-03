@@ -127,10 +127,15 @@
       "name": "Climb 3"
     },
     {
-      "length": 40,
+      "length": 25,
+      "grade": 6,
+      "name": "Crest Approach"
+    },
+    {
+      "length": 15,
       "grade": [
         6,
-        -6
+        -7
       ],
       "name": "Crest"
     },
@@ -139,15 +144,15 @@
       "radius": 300,
       "turn": "left",
       "grade": [
-        -6,
-        -2
+        -7,
+        -2.4
       ],
       "name": "Kink"
     },
     {
       "length": 250,
       "grade": [
-        -2,
+        -2.4,
         0
       ],
       "name": "Downhill Run"
@@ -202,10 +207,32 @@
       "name": "Quarry Corner"
     },
     {
-      "length": 40
+      "length": 40,
+      "bank": [
+        0,
+        -2
+      ],
+      "name": "Final Approach"
     },
     {
-      "length": 172.788,
+      "length": 30,
+      "radius": 110,
+      "turn": "left",
+      "bank": -2,
+      "name": "Final Corner Entry"
+    },
+    {
+      "length": 30,
+      "radius": 110,
+      "turn": "left",
+      "bank": [
+        -2,
+        6
+      ],
+      "name": "Final Corner Build"
+    },
+    {
+      "length": 112.788,
       "radius": 110,
       "turn": "left",
       "bank": 6,

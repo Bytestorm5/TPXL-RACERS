@@ -109,12 +109,90 @@ of the line (lateral 0) at `s = startLine + 2 + k × gridSpacing`. With the defa
   (exit), all with the same radius. Jumps of more than 8° per 10 m earn a warning.
 - **Crest / jump-feeling hill:** a short segment whose grade ramps from up to down, e.g.
   `{ "length": 40, "grade": [6, -6] }`. Keep grade continuous across segment borders
-  (end one segment at the % the next one starts with) — a jump > 10 % warns.
+  (end one segment at the % the next one starts with) — a jump > 10 % warns. For crests
+  that actually launch the car see *Jumps, crests and off-camber corners* below.
 - **Hairpin:** small radius, big angle: `{ "length": 69.1, "radius": 22, "turn": "left" }`
   is 180°. Beware `curvature × width > 1.6`: the inner edge radius approaches zero and
   the compiler warns that the edge folds.
 - **Surface patch:** just a segment with a different `surface`; use `lanes` for partial-
   width patches (ice on the exit kerb, a dirt strip).
+
+## Jumps, crests and off-camber corners
+
+The vehicle is a 6-DOF body on struts: it really leaves the ground over a crest and
+really rolls on an off-camber corner. The road is a piecewise-linear grade/bank profile
+sampled every metre, so these features are just grade and bank ramps — the trick is
+getting the numbers right.
+
+**Sign rules (worth re-reading):**
+
+- `grade` + = uphill. A car launches where the grade *falls* quickly (up → down).
+- `bank` + = **right edge higher**. A corner is *helped* when the outside edge is higher:
+  a **left** turn wants **positive** bank, a **right** turn wants **negative** bank.
+- Therefore **off-camber = outside edge lower**: an off-camber **left** turn has
+  **negative** bank, an off-camber **right** turn has **positive** bank.
+
+**Rate limits (warning thresholds — the built-ins ship with zero warnings):** within a
+segment grade may change at most 10 % per 10 m and bank 8° per 10 m, so a change of Δ
+points needs a segment at least Δ metres long (0 → +16 % needs ≥ 16 m). At a segment
+*boundary* a step of up to 10 points of grade (8° of bank) is allowed — the check is
+"more than 10". That boundary step is the only way to author a sharp takeoff edge, see
+below; keep it ≤ 6 points so a future tightening of the rule does not bite.
+
+**When does a car get light or fly?** A grade change of Δg (rad) spread over L metres
+bends the road with a vertical radius R ≈ L/Δg. A car at speed v follows the road only
+while v²/R < g ≈ 9.81 m/s²: at v²/R ≈ 0.5 g the struts unload by half (mid-corner that
+means a slide), at v²/R ≥ g the wheels leave the ground. At the maximum warning-free ramp
+rate (10 %/10 m) R ≈ 100 m, so a *pure ramp* only launches a car above √(g·R) ≈ 31 m/s
+= 113 km/h — the road keeps rising under a +16 % lip for 16 more metres and a 90 km/h
+car simply follows it. Fine for ridgeway's `Crest` (GP speeds) or a fast downhill kicker,
+useless for a rallycross car. For a real lip put a **boundary step** at the takeoff edge:
+`grade: 16` on the table, the next segment starting at `[10, …]`. The road then falls
+away from the takeoff tangent by `0.06·x + ½·(ramp rate)·x²` — about 1.07 m after 10 m
+with the recipe below — and a car is airborne as soon as its ballistic drop `g·x²/(2v²)`
+is smaller than that: ≈ 80 km/h here; at 100 km/h it flies ~28 m, at 120 km/h ~47 m,
+peaking `v·sin(atan(0.16))` ≈ 4.4 m/s → ~1 m above the lip. Land on a downslope
+(−6…−10 %) that is long enough for the fastest car you expect, then ramp back to flat;
+landing on flat or uphill is harsh.
+
+**Recipe — tabletop jump (dunes-rallycross, `Tabletop Ramp` … `Landing Out`):**
+
+```jsonc
+{ "length": 180, "name": "Start Straight" },                 // the run-up: straight, ≥ 120 m
+{ "length": 18, "grade": [0, 16], "name": "Tabletop Ramp" }, // 0 → +16 % (8.9 %/10 m)
+{ "length": 6,  "grade": 16,      "name": "Tabletop" },      // hold the lip — cars leave here
+{ "length": 19, "grade": [10, -8], "name": "Tabletop Drop" },// 6-point edge, then 18 pts/19 m
+{ "length": 28, "grade": -8,      "name": "Landing" },       // downslope landing, ≥ 45 m past the lip
+{ "length": 8,  "grade": [-8, 0], "name": "Landing Out" }    // back to flat before the corner
+```
+
+Place it on a straight where cars arrive at 80–120 km/h and leave ≥ 50 m of straight
+after `Landing Out` so the car has settled before it must turn. As written the table is
+elevation-neutral to 3 cm (1.44 + 0.96 + 0.19 − 2.24 − 0.32 m); if you change a length,
+re-sum `mean(grade) × length` or the compiler reports the difference as closure error.
+
+**Recipe — crest (ridgeway `Crest`, pinecone `Kicker Jump`):** a single segment whose grade
+goes from the climb value to the descent value at (nearly) the maximum rate, with the
+neighbours continuing those grades: `{ "length": 15, "grade": [6, -7] }` after a +6 %
+climb and before a −7 % section (R ≈ 115 m: airborne above ~120 km/h, which a GP car
+has there). Pinecone's kicker adds the lip step for lower speeds: `[-6, 12]` over 40 m,
+then `{ "length": 17, "grade": [6, -10] }`, then a `[-10, -7]` landing. For a mid-corner
+crest put the ramp on a segment that keeps the corner's `radius` (dunes `Sweeper Crest`:
+`{ "length": 17, "radius": 80, "turn": "left", "grade": [8, -8] }`, R ≈ 106 m) — the car
+unloads by half at 80 km/h while it is still turning, which on gravel is a slide.
+Bracket a crest with the *approach* and *landing* grades so the elevation sums to what
+you want; a symmetric `[g, -g]` crest is elevation-neutral only if the surroundings are.
+
+**Recipe — off-camber corner (dunes `Turn 2`, pinecone `Downhill Right`, ridgeway `Final
+Corner Entry`):** three segments with the same radius and turn: entry `bank: [0, b]`,
+core `bank: b`, exit `bank: [b, 0]`, where `b` is **negative for a left turn** and
+**positive for a right turn** (see the sign rules). Ramp lengths ≥ 1.25 m per degree
+(15 m for 6°, 20 m for 4° is comfortable). −6° on dirt costs roughly 10 % of cornering
+speed and loads the outside struts hard. A subtler trap is a corner that *becomes*
+helpful mid-way (ridgeway's Final Corner: 30 m at −2°, then a fourth segment
+`bank: [-2, 6]` between entry and core builds the +6° the driver expected from the
+start). Check with `compileTrack(spec).poseAt(s, ±width/2).z`: on an off-camber stretch
+the outside edge must be the lower one.
 
 ## Worked example
 

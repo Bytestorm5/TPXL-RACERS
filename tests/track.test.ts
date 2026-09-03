@@ -350,9 +350,10 @@ describe('validateTrack', () => {
 });
 
 describe('built-in tracks', () => {
-  it('all five compile with zero issues (closure < 2 m before the blend)', () => {
+  it('all built-ins compile with zero issues (closure < 2 m before the blend)', () => {
     expect(BUILTIN_TRACKS.map((t) => t.id).sort()).toEqual([
       'clubsprint',
+      'dunes-rallycross',
       'glacier-loop',
       'pinecone-stage',
       'ridgeway',
