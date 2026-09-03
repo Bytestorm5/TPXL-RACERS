@@ -121,6 +121,8 @@ input[type=color].color-input { width: 34px; height: 30px; border: 1px solid var
 .garage > * { min-height: 0; overflow: auto; padding: 10px 14px; }
 .garage-cars { border-right: 1px solid var(--line); background: var(--bg-2); }
 .garage-analysis { border-left: 1px solid var(--line); background: var(--bg-2); }
+canvas.showroom { width: 100%; height: 210px; display: block; background: radial-gradient(60% 80% at 50% 60%, #232833, #14161b); border: 1px solid var(--line); border-radius: var(--radius); cursor: grab; touch-action: none; }
+canvas.showroom:active { cursor: grabbing; }
 .car-list { list-style: none; margin: 0 0 12px; padding: 0; }
 .car-item { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 6px; cursor: pointer; color: var(--muted); }
 .car-item:hover { background: var(--bg-3); color: var(--text); }
@@ -218,6 +220,13 @@ canvas.chart { width: 100%; height: 150px; display: block; background: var(--bg-
 .stag-asphalt { border-color: #4a4e57; } .stag-concrete { border-color: #5b5f66; } .stag-curb { border-color: #d03030; color: #ffb3b3; }
 .stag-gravel { border-color: #8b7a60; } .stag-dirt { border-color: #7a6a52; } .stag-grass { border-color: #4d7a44; } .stag-sand { border-color: #c9b17a; }
 .stag-snow { border-color: #dfe5ea; } .stag-ice { border-color: #9fc7e0; color: #cfe0ee; } .stag-wet_asphalt { border-color: #4c6b82; }
+.mods { margin: 8px 0 24px; }
+.mods .panel-title { justify-content: flex-start; gap: 10px; }
+.mods-list { list-style: none; margin: 0 0 8px; padding: 0; }
+.mods-list li { padding: 3px 0; border-bottom: 1px dashed var(--line); }
+.mods-list li.mod-error { color: var(--warn); }
+.mods-buttons { display: flex; gap: 8px; }
+.tag.accent { color: var(--accent); border-color: var(--accent); }
 .opp-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
 .opp-row { display: flex; align-items: center; gap: 8px; }
 .opp-row .select { flex: 1; }

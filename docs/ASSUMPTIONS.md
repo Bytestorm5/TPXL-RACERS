@@ -269,3 +269,25 @@ append to the relevant section when you simplify something. (Merged from every m
 - A rear axle that locks first is a `danger` — downgraded to a `warning` on drift-compound rear tyres,
   where it is a slide-initiation tool (the Drift Missile preset is deliberately 0.02 rearward of
   balanced); the summary says so plainly.
+
+## Rendering (src/render3d) — visual only, nothing here changes the physics
+- The 3D view draws the sim's own road plane (`z = z_c − lateral·tan(bank)` between 1 m samples, chord
+  interpolated) and the terrain 0.35 m below it; surface roughness (`roads.ts`, 6 cm at 0.5 m
+  wavelength) is felt through the struts but not displaced in the mesh — it would alias on 1 m samples.
+- Cars are procedural boxes sized from the VehicleSpec (length, width, wheelbase, tracks, CG height,
+  ride heights, tyre radius/width, wing from rear downforce area). No damage, no deformation; a
+  collision only flashes the body (`lastImpact > 500 N·s`).
+- Wheel spin is integrated from `omega` at the frame rate for the picture only; the sim keeps its own
+  wheel state. Suspension travel shown is `compression` clamped to ±travel.
+- Skid marks and dust are drawn from `locked` / `spinning` / `utilisation > 0.98` and the contact
+  surface; they never feed back. Both are skipped with more than 8 cars.
+- Marker posts and the start gantry are decor: there are **no physical barriers** anywhere (cars only
+  collide with each other; leaving the world triggers the off-world reset). A 3D scene makes that
+  visible — adding walls means adding a contact term to `vehicle.ts` / `race.ts`, not to the renderer.
+- Sky, sun direction and the terrain hills are fixed per environment palette (temperate / snow /
+  desert by the default shoulder surface); there is no time of day and no weather (the sim has a
+  `wet_asphalt` surface but no rain).
+- A software rasterizer (SwiftShader / llvmpipe) gets a low preset (no shadows, no MSAA, half
+  resolution); the fixed-step loop still caps `dt` at 66 ms so a slow renderer means slow motion,
+  never a physics change.
+

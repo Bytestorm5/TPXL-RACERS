@@ -6,9 +6,10 @@
 import { describe, expect, it } from 'vitest';
 import { FIELD_RANGES, presetBuilds } from '../src/design/parts';
 import { fieldLabel, getPath, SECTIONS, setPath } from '../src/ui/fields';
-import { isBestFile, isCarBuildLike, isCarsFile, isSetupFile } from '../src/ui/storage';
+import { isBestFile, isCarBuildLike, isCarsFile, isSetupFile, KEYS, loadJson, saveJson, setStorageBackend, storageKind } from '../src/ui/storage';
 import { buildRaceConfig } from '../src/ui/raceView';
-import { Session } from '../src/ui/state';
+import { loadUserTracks, Session } from '../src/ui/state';
+import { BUILTIN_TRACKS } from '../src/tracks/index';
 import { fmtDelta, fmtLap, fmtStep, humanizePath } from '../src/ui/format';
 
 describe('garage field descriptors', () => {
@@ -63,6 +64,58 @@ describe('storage validators', () => {
     expect(isSetupFile({ format: 1, trackId: 'clubsprint', laps: '3', playerCarId: 'a', opponents: [], aiSkill: 0.8 })).toBe(false);
     expect(isBestFile({ format: 1, best: { 'clubsprint|a': 61.2 } })).toBe(true);
     expect(isBestFile({ format: 1, best: { 'clubsprint|a': -1 } })).toBe(false);
+  });
+});
+
+describe('storage backend (desktop bridge shape)', () => {
+  it('reads and writes through an injected backend and drops invalid saves', () => {
+    const files = new Map<string, string>();
+    setStorageBackend({ get: (k) => files.get(k) ?? null, set: (k, v) => void files.set(k, v), remove: (k) => void files.delete(k) });
+    try {
+      expect(storageKind()).toBe('browser');
+      saveJson(KEYS.best, { format: 1, best: { 'clubsprint|x': 70 } });
+      expect(loadJson(KEYS.best, isBestFile)?.best['clubsprint|x']).toBe(70);
+      files.set(KEYS.best, '{"format":1,"best":{"a":-5}}');
+      expect(loadJson(KEYS.best, isBestFile)).toBeNull();
+      expect(files.has(KEYS.best)).toBe(false); // invalid file removed
+      files.set(KEYS.setup, 'not json');
+      expect(loadJson(KEYS.setup, isSetupFile)).toBeNull();
+      // a Session persists its cars through the same backend
+      const s = new Session();
+      expect(files.has(KEYS.cars)).toBe(true);
+      expect(isCarsFile(JSON.parse(files.get(KEYS.cars)!))).toBe(true);
+      s.setBest('clubsprint', s.selectedCarId, 66);
+      expect(JSON.parse(files.get(KEYS.best)!).best[`clubsprint|${s.selectedCarId}`]).toBe(66);
+    } finally {
+      setStorageBackend(null);
+    }
+    expect(storageKind()).toBe('none');
+  });
+});
+
+describe('user track files (desktop tracks folder)', () => {
+  it('loads valid specs, reports parse/validation errors and rejects duplicate ids', () => {
+    const good = { ...BUILTIN_TRACKS[3], id: 'my-track', name: 'My Track' };
+    const res = loadUserTracks([
+      { file: 'good.json', spec: good },
+      { file: 'broken.json', error: 'Unexpected token' },
+      { file: 'notatrack.json', spec: { hello: 1 } },
+      { file: 'dup.json', spec: { ...good } },
+      { file: 'shadow.json', spec: { ...good, id: BUILTIN_TRACKS[0].id } },
+      { file: 'invalid.json', spec: { ...good, id: 'bad', segments: [{ length: -5 }] } },
+    ]);
+    expect(res.map((r) => r.spec !== null)).toEqual([true, false, false, false, false, false]);
+    expect(res[1].error).toMatch(/Unexpected token/);
+    expect(res[2].error).toMatch(/not a RACERS track/);
+    expect(res[3].error).toMatch(/duplicate/);
+    expect(res[4].error).toMatch(/duplicate/);
+    expect(res[5].error).toMatch(/segment/i);
+    // in the browser the session has no user tracks and only the built-ins
+    const s = new Session();
+    expect(s.userTracks).toEqual([]);
+    expect(s.trackSpecs.length).toBe(BUILTIN_TRACKS.length);
+    expect(s.hasTrack('clubsprint')).toBe(true);
+    expect(s.hasTrack('nope')).toBe(false);
   });
 });
 

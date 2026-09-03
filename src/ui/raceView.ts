@@ -1,10 +1,11 @@
 /**
  * RACE screen (#/race/run).
  *
- * Render layers (back → front): track raster (offscreen, drawn once) · skid-mark raster
- * (persistent offscreen) · cars (world transform, north-up camera) · DOM HUD.
+ * Rendering: the 3D scene (src/render3d/scene.ts — terrain, road strip, cars, skid ribbons, dust,
+ * chase / hood / top / tv cameras) on a WebGL canvas, with the DOM HUD (and a 2D minimap) on top.
  * Loop: requestAnimationFrame → race.step(dt) with dt capped at 8 × SIM_DT (slow-motion rather
- * than a spiral) → render. HUD strings are rebuilt only when their values change.
+ * than a spiral) → scene.update + render. HUD strings are rebuilt only when their values change.
+ * Input: keyboard, plus a gamepad when one is connected (src/ui/gamepad.ts).
  *
  * The race is created when the screen is entered; if the simulation throws (a runtime fault) a
  * friendly panel is shown instead of a crash. Standings, lap counts, sectors, gaps and the results
@@ -15,6 +16,8 @@
  * synchronously and `autopilot(on)` hands the player car to an AI driver.
  */
 import { compileBuild } from '../design/compile';
+import { CAMERA_MODES, type CameraMode } from '../render3d/camera';
+import { RaceScene } from '../render3d/scene';
 import { createAiDriver, type AiDriver } from '../sim/ai';
 import { brakeEffectiveness } from '../sim/brakes';
 import { createRace, raceSummary, type CarTiming, type Race, type RaceCar, type RaceConfig, type RaceEntry, type RaceSnapshot } from '../sim/race';
@@ -23,9 +26,10 @@ import type { DriverInput, VehicleState } from '../sim/types';
 import { SIM_DT } from '../sim/vehicle';
 import { Bar, ClassSwitch, clear, h, Text, toast } from './dom';
 import { fmtDelta, fmtInt, fmtLap } from './format';
+import { GamepadInput } from './gamepad';
 import { ROUTES, type Nav, type Screen } from './screen';
 import type { PendingRace, Session } from './state';
-import { renderTrackImage, SURFACE_LABEL, type TrackImage } from './trackRender';
+import { drawMinimap, minimapTransform, SURFACE_LABEL, type MinimapTransform } from './trackRender';
 
 /** Longest sim advance per frame (s): 8 substeps at 120 Hz. Beyond that we run slow-motion. */
 const MAX_SUBSTEPS_PER_FRAME = 8;
@@ -35,8 +39,10 @@ const STEER_DECAY = 5; // per second back to centre
 const THROTTLE_RAMP = 4;
 const BRAKE_RAMP = 6;
 const PEDAL_RELEASE = 10;
-const SKID_MAX_CARS = 6;
 const DELTA_BINS = 120;
+const MINIMAP_W = 200;
+const MINIMAP_H = 150;
+const CAMERA_LABEL: Record<CameraMode, string> = { chase: 'Chase camera', hood: 'Hood camera', top: 'Overhead camera', tv: 'Trackside camera' };
 /** Frames kept by the rAF performance probe. */
 const PERF_WINDOW = 300;
 
@@ -47,6 +53,18 @@ const PERF_WINDOW = 300;
 interface DebugView {
   advance(seconds: number): number;
   setAutopilot(on: boolean): void;
+  setCamera(mode: CameraMode): void;
+  renderStats(): RenderStats;
+}
+
+export interface RenderStats {
+  calls: number;
+  triangles: number;
+  trackTriangles: number;
+  /** WEBGL_debug_renderer_info string ('' when the 3D view is unavailable). */
+  gpu: string;
+  /** 'high' or 'low' (software rasterizer preset: no shadows / MSAA, half resolution). */
+  quality: string;
 }
 let activeView: DebugView | null = null;
 
@@ -142,6 +160,16 @@ export const raceDebug = {
   autopilot(on: boolean): void {
     activeView?.setAutopilot(on);
   },
+  /** Current camera mode (chase / hood / top / tv). */
+  cameraMode: 'chase' as CameraMode,
+  /** Switch camera (e2e / demo). */
+  setCamera(mode: CameraMode): void {
+    activeView?.setCamera(mode);
+  },
+  /** Draw calls / triangles of the last rendered frame, the static road-mesh triangle count and the GPU name. */
+  renderStats(): RenderStats {
+    return activeView ? activeView.renderStats() : { calls: 0, triangles: 0, trackTriangles: 0, gpu: '', quality: '' };
+  },
 };
 
 function resetSeen(): void {
@@ -222,21 +250,6 @@ function moveToward(v: number, target: number, maxDelta: number): number {
 }
 
 const clamp = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > hi ? hi : v);
-
-function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, hgt: number, r: number): void {
-  const rr = Math.min(r, w / 2, hgt / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + rr, y);
-  ctx.lineTo(x + w - rr, y);
-  ctx.quadraticCurveTo(x + w, y, x + w, y + rr);
-  ctx.lineTo(x + w, y + hgt - rr);
-  ctx.quadraticCurveTo(x + w, y + hgt, x + w - rr, y + hgt);
-  ctx.lineTo(x + rr, y + hgt);
-  ctx.quadraticCurveTo(x, y + hgt, x, y + hgt - rr);
-  ctx.lineTo(x, y + rr);
-  ctx.quadraticCurveTo(x, y, x + rr, y);
-  ctx.closePath();
-}
 
 function gearLabel(g: number): string {
   return g === 0 ? 'N' : g < 0 ? 'R' : String(g);
@@ -336,13 +349,10 @@ class WheelRow {
 class RaceView {
   private readonly el: HTMLElement;
   private readonly canvas = h('canvas', { class: 'world' });
-  private readonly ctx: CanvasRenderingContext2D;
   private readonly hud = h('div', { class: 'hud' });
   private readonly track: CompiledTrack;
-  private trackImg: TrackImage | null = null;
-  private skidCanvas: HTMLCanvasElement | null = null;
-  private skidCtx: CanvasRenderingContext2D | null = null;
-  private skidScale = 1;
+  private scene: RaceScene | null = null;
+  private readonly pad = new GamepadInput();
   private race: Race | null = null;
   private playerIndex = -1;
   private simError: string | null = null;
@@ -354,8 +364,6 @@ class RaceView {
   private autoAcc = 0;
 
   private dpr = 1;
-  private readonly cam = { x: 0, y: 0, zoom: 6 };
-  private camInit = false;
 
   // input
   private readonly keys = new Set<string>();
@@ -377,10 +385,6 @@ class RaceView {
   private resultsShown = false;
   private resultsTimer = 0;
 
-  // skid marks
-  private prevWheel = new Float64Array(0);
-  private prevValid = new Uint8Array(0);
-
   // best lap / delta
   private curBins = new Float32Array(DELTA_BINS).fill(NaN);
   private bestBins = new Float32Array(DELTA_BINS).fill(NaN);
@@ -398,8 +402,9 @@ class RaceView {
   private readonly sectorCls: ClassSwitch[] = [];
   private readonly standingsEl = h('ul', { class: 'standings' });
   private standingRows: StandingRow[] = [];
-  private readonly minimap = h('canvas', { class: 'hud-minimap', width: 200, height: 150 });
+  private readonly minimap = h('canvas', { class: 'hud-minimap', width: MINIMAP_W, height: MINIMAP_H });
   private minimapThumb: HTMLCanvasElement | null = null;
+  private minimapMap: MinimapTransform | null = null;
   private readonly elevText = new Text('div', 'hud-elev');
   private readonly speedText = new Text('span');
   private readonly gearText = new Text('span');
@@ -446,26 +451,18 @@ class RaceView {
     this.countdownEl.replaceChildren(this.countdownText.el);
     this.deltaCls = new ClassSwitch(this.deltaText.el, 'hud-delta');
     this.el = h('div', { class: 'screen race' }, this.canvas, this.hud);
-    const ctx = this.canvas.getContext('2d', { alpha: false });
-    if (!ctx) throw new Error('Canvas 2D not available');
-    this.ctx = ctx;
     this.buildHud();
     root.appendChild(this.el);
-
-    // Track raster (once).
-    this.trackImg = renderTrackImage(this.track);
-    this.skidScale = Math.min(this.trackImg.scale, 4);
-    this.skidCanvas = document.createElement('canvas');
-    this.skidCanvas.width = Math.max(1, Math.ceil(this.trackImg.width * (this.skidScale / this.trackImg.scale)));
-    this.skidCanvas.height = Math.max(1, Math.ceil(this.trackImg.height * (this.skidScale / this.trackImg.scale)));
-    this.skidCtx = this.skidCanvas.getContext('2d');
-    if (this.skidCtx) {
-      this.trackImg.applyWorldTransform(this.skidCtx, this.skidScale);
-      this.skidCtx.lineCap = 'round';
-      this.skidCtx.lineWidth = 0.22;
-    }
     this.buildMinimapThumb();
-    this.cam.zoom = this.track.spec.closed ? 7 : 4;
+
+    // The 3D scene (terrain + road mesh are built once per track here).
+    try {
+      this.scene = new RaceScene(this.canvas, this.track);
+      this.scene.setCameraMode(raceDebug.cameraMode);
+    } catch (err) {
+      this.scene = null;
+      this.showRenderMissing(err);
+    }
 
     this.createRace();
     activeView = this;
@@ -486,9 +483,10 @@ class RaceView {
     window.removeEventListener('blur', this.onBlur);
     window.removeEventListener('resize', this.onResize);
     if (this.resultsTimer) window.clearInterval(this.resultsTimer);
-    // release the big rasters
-    if (this.trackImg) this.trackImg.canvas.width = this.trackImg.canvas.height = 0;
-    if (this.skidCanvas) this.skidCanvas.width = this.skidCanvas.height = 0;
+    if (this.scene) {
+      this.scene.dispose();
+      this.scene = null;
+    }
     this.race = null;
     this.autopilotAi = null;
     if (activeView === this) activeView = null;
@@ -524,8 +522,7 @@ class RaceView {
     resetSeen();
     perf.reset();
     const n = this.race.cars.length;
-    this.prevWheel = new Float64Array(n * 8);
-    this.prevValid = new Uint8Array(n * 4);
+    this.scene?.setCars(this.race.cars, this.playerIndex);
     this.curBins.fill(NaN);
     this.bestBins.fill(NaN);
     this.bestLapSession = null;
@@ -535,14 +532,7 @@ class RaceView {
     this.goUntil = 0;
     this.resultsShown = false;
     this.resultsEl.hidden = true;
-    this.camInit = false;
     this.steer = this.throttle = this.brake = 0;
-    if (this.skidCtx && this.skidCanvas) {
-      this.skidCtx.save();
-      this.skidCtx.setTransform(1, 0, 0, 1, 0, 0);
-      this.skidCtx.clearRect(0, 0, this.skidCanvas.width, this.skidCanvas.height);
-      this.skidCtx.restore();
-    }
     // standings rows
     clear(this.standingsEl);
     this.standingRows = [];
@@ -586,6 +576,15 @@ class RaceView {
         ),
       ),
     );
+  }
+
+  /** WebGL unavailable (or the scene failed to build): the race still runs; the HUD keeps updating. */
+  private showRenderMissing(err: unknown): void {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('3D renderer unavailable:', err);
+    raceDebug.error = `renderer: ${msg}`;
+    this.msgText.set('3D view unavailable (WebGL) — the race runs on the HUD only');
+    this.msgText.el.hidden = false;
   }
 
   private restart(): void {
@@ -644,7 +643,7 @@ class RaceView {
       this.deltaText.el,
       this.bestText.el,
     );
-    const hint = h('div', { class: 'hud-hint' }, '↑↓ / W S drive · ←→ / A D steer · Space handbrake · E/Q shift · R reset · T telemetry · +/− zoom · P pause · Esc menu');
+    const hint = h('div', { class: 'hud-hint' }, '↑↓ / W S drive · ←→ / A D steer · Space handbrake · E/Q shift · C camera · +/− distance · R reset · T telemetry · P pause · Esc menu · gamepad: stick + triggers, Y camera');
 
     // telemetry table
     const head = h(
@@ -665,18 +664,9 @@ class RaceView {
   }
 
   private buildMinimapThumb(): void {
-    if (!this.trackImg) return;
     const thumb = document.createElement('canvas');
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    thumb.width = Math.round(200 * dpr);
-    thumb.height = Math.round(150 * dpr);
-    const tctx = thumb.getContext('2d');
-    if (!tctx) return;
-    const s = Math.min(thumb.width / this.trackImg.width, thumb.height / this.trackImg.height);
-    const w = this.trackImg.width * s;
-    const hh = this.trackImg.height * s;
-    tctx.fillStyle = 'rgba(0,0,0,0)';
-    tctx.drawImage(this.trackImg.canvas, (thumb.width - w) / 2, (thumb.height - hh) / 2, w, hh);
+    drawMinimap(thumb, this.track, MINIMAP_W, MINIMAP_H);
+    this.minimapMap = minimapTransform(this.track, MINIMAP_W, MINIMAP_H);
     this.minimapThumb = thumb;
     this.minimap.width = thumb.width;
     this.minimap.height = thumb.height;
@@ -714,33 +704,25 @@ class RaceView {
         e.preventDefault();
         return;
       case 'r':
-        if (this.race && this.playerIndex >= 0) {
-          try {
-            this.race.resetCar(this.playerIndex);
-            this.autopilotAi?.reset?.();
-          } catch (err) {
-            this.showSimMissing(err);
-          }
-        }
+        this.resetPlayer();
         return;
       case 't':
         this.telemetryOpen = !this.telemetryOpen;
         this.telemetryEl.hidden = !this.telemetryOpen;
         return;
       case 'p':
-        if (!this.menuOpen) {
-          this.paused = !this.paused;
-          this.msgText.set('PAUSED');
-          this.msgText.el.hidden = !this.paused;
-        }
+        this.togglePause();
+        return;
+      case 'c':
+        this.cycleCamera();
         return;
       case '+':
       case '=':
-        this.cam.zoom = clamp(this.cam.zoom * 1.25, 1.5, 18);
+        if (this.scene) this.scene.rig.distance = clamp(this.scene.rig.distance / 1.2, 0.5, 3);
         return;
       case '-':
       case '_':
-        this.cam.zoom = clamp(this.cam.zoom / 1.25, 1.5, 18);
+        if (this.scene) this.scene.rig.distance = clamp(this.scene.rig.distance * 1.2, 0.5, 3);
         return;
       case 'Escape':
         this.toggleMenu();
@@ -761,9 +743,48 @@ class RaceView {
     this.dpr = Math.min(window.devicePixelRatio || 1, 1.5);
     const w = this.el.clientWidth || window.innerWidth;
     const hgt = this.el.clientHeight || window.innerHeight;
-    this.canvas.width = Math.max(1, Math.round(w * this.dpr));
-    this.canvas.height = Math.max(1, Math.round(hgt * this.dpr));
+    if (this.scene) this.scene.resize(Math.max(1, w), Math.max(1, hgt), this.dpr);
+    else {
+      this.canvas.width = Math.max(1, Math.round(w * this.dpr));
+      this.canvas.height = Math.max(1, Math.round(hgt * this.dpr));
+    }
   };
+
+  private resetPlayer(): void {
+    if (this.race && this.playerIndex >= 0) {
+      try {
+        this.race.resetCar(this.playerIndex);
+        this.autopilotAi?.reset?.();
+      } catch (err) {
+        this.showSimMissing(err);
+      }
+    }
+  }
+
+  private togglePause(): void {
+    if (this.menuOpen) return;
+    this.paused = !this.paused;
+    this.msgText.set('PAUSED');
+    this.msgText.el.hidden = !this.paused;
+  }
+
+  private cycleCamera(): void {
+    if (!this.scene) return;
+    const mode = this.scene.rig.cycle();
+    raceDebug.cameraMode = mode;
+    toast(CAMERA_LABEL[mode]);
+  }
+
+  setCamera(mode: CameraMode): void {
+    if (!CAMERA_MODES.includes(mode)) return;
+    raceDebug.cameraMode = mode;
+    this.scene?.setCameraMode(mode);
+  }
+
+  renderStats(): RenderStats {
+    const s = this.scene;
+    return s ? { calls: s.stats.calls, triangles: s.stats.triangles, trackTriangles: s.meshData.triangleCount, gpu: s.gpuName(), quality: s.quality } : { calls: 0, triangles: 0, trackTriangles: 0, gpu: '', quality: '' };
+  }
 
   private toggleMenu(): void {
     if (this.simError) return;
@@ -868,17 +889,32 @@ class RaceView {
     }
     this.throttle = moveToward(this.throttle, up ? 1 : 0, (up ? THROTTLE_RAMP : PEDAL_RELEASE) * dt);
     this.brake = moveToward(this.brake, down ? 1 : 0, (down ? BRAKE_RAMP : PEDAL_RELEASE) * dt);
+    // gamepad: analogue values win over the keyboard ramps while the pad is being used
+    const pad = this.padState;
     const inp = this.input;
-    inp.steer = this.steer;
-    inp.throttle = this.throttle;
-    inp.brake = this.brake;
-    inp.handbrake = k.has(' ') ? 1 : 0;
+    inp.steer = pad && pad.steer !== 0 ? pad.steer : this.steer;
+    inp.throttle = pad ? Math.max(this.throttle, pad.throttle) : this.throttle;
+    inp.brake = pad ? Math.max(this.brake, pad.brake) : this.brake;
+    inp.handbrake = k.has(' ') || (pad && pad.handbrake > 0) ? 1 : 0;
     const auto = race.cars[this.playerIndex].entry.spec.drivetrain.autoShift;
-    inp.shiftUp = !auto && this.shiftUp;
-    inp.shiftDown = !auto && this.shiftDown;
+    inp.shiftUp = !auto && (this.shiftUp || Boolean(pad?.shiftUp));
+    inp.shiftDown = !auto && (this.shiftDown || Boolean(pad?.shiftDown));
     this.shiftUp = false;
     this.shiftDown = false;
+    this.padState = null;
     race.setPlayerInput(inp);
+  }
+
+  /** The pad state polled this frame (consumed by the first updateInput of the frame). */
+  private padState: ReturnType<GamepadInput['poll']> | null = null;
+
+  /** Poll the gamepad once per frame; edge buttons act immediately, the axes are consumed by updateInput. */
+  private pollGamepad(): void {
+    const p = this.pad.poll();
+    if (p.reset) this.resetPlayer();
+    if (p.camera) this.cycleCamera();
+    if (p.menu) this.toggleMenu();
+    this.padState = p.active ? p : null;
   }
 
   // ----------------------------------------------------------------- loop
@@ -892,6 +928,7 @@ class RaceView {
     if (dt > MAX_FRAME_DT) dt = MAX_FRAME_DT; // slow-motion instead of a death spiral
     const race = this.race;
     const t0 = performance.now();
+    this.pollGamepad();
     if (race && !this.paused && !this.simError) {
       try {
         this.stepRace(race, dt);
@@ -911,209 +948,18 @@ class RaceView {
   };
 
   private render(dt: number): void {
-    const ctx = this.ctx;
-    const W = this.canvas.width;
-    const H = this.canvas.height;
     const race = this.race;
-    let snap: RaceSnapshot | null = null;
-    let focus: VehicleState | null = null;
-    if (race) {
-      snap = race.snapshot();
-      const focusIndex = this.playerIndex >= 0 ? this.playerIndex : snap.order.length > 0 ? snap.order[0] : 0;
-      focus = race.cars[focusIndex]?.state ?? null;
+    if (!race) {
+      this.scene?.render();
+      return;
     }
-    // camera: exponential follow, north-up
-    if (focus) {
-      if (!this.camInit) {
-        this.cam.x = focus.x;
-        this.cam.y = focus.y;
-        this.camInit = true;
-      } else {
-        const k = 1 - Math.exp(-dt * 10);
-        this.cam.x += (focus.x - this.cam.x) * k;
-        this.cam.y += (focus.y - this.cam.y) * k;
-      }
-    } else if (!this.camInit) {
-      const s = this.track.centreAt(this.track.startLine);
-      this.cam.x = s.x;
-      this.cam.y = s.y;
-      this.camInit = true;
+    const snap = race.snapshot();
+    if (this.scene) {
+      // frozen while paused (dt 0): cars and camera hold, FX are not spawned
+      this.scene.update(race, snap, this.playerIndex, this.paused ? 0 : dt, snap.time);
+      this.scene.render();
     }
-
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = this.trackImg?.background ?? '#101216';
-    ctx.fillRect(0, 0, W, H);
-    if (this.trackImg) {
-      this.drawLayer(this.trackImg.canvas, this.trackImg.scale);
-      if (this.skidCanvas) this.drawLayer(this.skidCanvas, this.skidScale);
-    }
-
-    if (race && snap) {
-      // world transform (device px): +y north → up
-      const z = this.cam.zoom * this.dpr;
-      ctx.setTransform(z, 0, 0, -z, W / 2 - this.cam.x * z, H / 2 + this.cam.y * z);
-      // draw back-markers first, player last
-      for (let r = snap.order.length - 1; r >= 0; r--) {
-        const idx = snap.order[r];
-        if (idx === this.playerIndex) continue;
-        this.drawCar(race.cars[idx], false);
-      }
-      if (this.playerIndex >= 0) this.drawCar(race.cars[this.playerIndex], true);
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      if (race.cars.length <= SKID_MAX_CARS && !this.paused) this.updateSkids(race);
-      this.updateHud(race, snap);
-    }
-  }
-
-  /** Blit the visible part of a world-aligned raster (shares the track image origin). */
-  private drawLayer(img: HTMLCanvasElement, scale: number): void {
-    const ti = this.trackImg;
-    if (!ti) return;
-    const ctx = this.ctx;
-    const W = this.canvas.width;
-    const H = this.canvas.height;
-    const ppm = this.cam.zoom * this.dpr;
-    const wx0 = this.cam.x - W / (2 * ppm);
-    const wy1 = this.cam.y + H / (2 * ppm);
-    let sx = (wx0 - ti.originX) * scale;
-    let sy = (ti.originY - wy1) * scale;
-    let sw = (W / ppm) * scale;
-    let sh = (H / ppm) * scale;
-    const f = ppm / scale;
-    let dx = 0;
-    let dy = 0;
-    if (sx < 0) {
-      dx = -sx * f;
-      sw += sx;
-      sx = 0;
-    }
-    if (sy < 0) {
-      dy = -sy * f;
-      sh += sy;
-      sy = 0;
-    }
-    if (sx + sw > img.width) sw = img.width - sx;
-    if (sy + sh > img.height) sh = img.height - sy;
-    if (sw <= 0 || sh <= 0) return;
-    ctx.drawImage(img, sx, sy, sw, sh, dx, dy, sw * f, sh * f);
-  }
-
-  private drawCar(car: RaceCar, isPlayer: boolean): void {
-    const ctx = this.ctx;
-    const st = car.state;
-    const spec = car.entry.spec;
-    const L = spec.length;
-    const Wd = spec.width;
-    const a = spec.cgToFront;
-    const b = spec.wheelbase - a;
-    const bodyCx = (a - b) / 2; // body centred between the axles
-    // vertical DOF: height of the CG above the road beyond static ride; airborne guarantees a visible lift
-    let lift = st.z - st.road.z - spec.cgHeight;
-    if (!Number.isFinite(lift) || lift < 0) lift = 0;
-    if (st.airborne) lift = Math.max(lift, 0.35);
-    const roll = Number.isFinite(st.roll) ? clamp(st.roll, -0.7, 0.7) : 0;
-    const pitch = Number.isFinite(st.pitch) ? clamp(st.pitch, -0.5, 0.5) : 0;
-
-    ctx.save();
-    ctx.translate(st.x, st.y);
-    ctx.rotate(st.heading);
-
-    // shadow (soft, offset by the lift)
-    ctx.globalAlpha = lift > 0.02 ? 0.32 : 0.22;
-    ctx.fillStyle = '#000';
-    roundRect(ctx, bodyCx - L / 2 + 0.12 + lift * 0.55, -Wd / 2 - 0.12 - lift * 0.55, L, Wd, 0.35);
-    ctx.fill();
-    ctx.globalAlpha = 1;
-
-    // wheels (unskewed, on the ground)
-    ctx.fillStyle = '#0c0d10';
-    const tw = spec.trackFront / 2;
-    const wheelL = 0.62;
-    const wheelW = 0.26;
-    for (let i = 0; i < 4; i++) {
-      const w = st.wheels[i];
-      const wx = i < 2 ? a : -b;
-      const wy = i % 2 === 0 ? tw : -tw;
-      ctx.save();
-      ctx.translate(wx, wy);
-      if (i < 2) ctx.rotate(w.steer);
-      ctx.fillRect(-wheelL / 2, -wheelW / 2, wheelL, wheelW);
-      ctx.restore();
-    }
-
-    // body: scaled up when airborne, sheared/offset by roll, slightly shortened by pitch
-    const s = 1 + 0.12 * Math.min(1, lift / 1.5);
-    ctx.translate(bodyCx, 0);
-    ctx.scale(s * (1 - 0.08 * Math.abs(pitch)), s * Math.cos(roll * 0.6));
-    ctx.transform(1, 0, -roll * 0.25, 1, 0, -roll * 0.22);
-    ctx.fillStyle = spec.color;
-    roundRect(ctx, -L / 2, -Wd / 2, L, Wd, 0.38);
-    ctx.fill();
-    if (isPlayer) {
-      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-      ctx.lineWidth = 0.12;
-      ctx.stroke();
-    } else if (car.lastImpact > 500) {
-      ctx.strokeStyle = 'rgba(255,255,255,0.6)';
-      ctx.lineWidth = 0.1;
-      ctx.stroke();
-    }
-    // cabin
-    ctx.fillStyle = 'rgba(0,0,0,0.38)';
-    roundRect(ctx, -L * 0.28, -Wd * 0.36, L * 0.42, Wd * 0.72, 0.25);
-    ctx.fill();
-    // heading triangle at the nose
-    ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    ctx.beginPath();
-    ctx.moveTo(L / 2 - 0.1, 0);
-    ctx.lineTo(L / 2 - 0.75, 0.32);
-    ctx.lineTo(L / 2 - 0.75, -0.32);
-    ctx.closePath();
-    ctx.fill();
-    // brake lights
-    const braking = st.input.brake > 0.05 || st.input.handbrake > 0.5;
-    if (braking) {
-      ctx.fillStyle = 'rgba(255,40,40,0.35)';
-      ctx.fillRect(-L / 2 - 0.45, -Wd / 2 + 0.1, 0.6, Wd - 0.2);
-    }
-    ctx.fillStyle = braking ? '#ff3b3b' : '#6a1a1a';
-    ctx.fillRect(-L / 2 + 0.02, -Wd / 2 + 0.15, 0.16, 0.36);
-    ctx.fillRect(-L / 2 + 0.02, Wd / 2 - 0.51, 0.16, 0.36);
-    ctx.restore();
-  }
-
-  private updateSkids(race: Race): void {
-    const sctx = this.skidCtx;
-    if (!sctx) return;
-    const cars = race.cars;
-    for (let i = 0; i < cars.length; i++) {
-      const st = cars[i].state;
-      const moving = st.speed > 1.5;
-      for (let w = 0; w < 4; w++) {
-        const ws = st.wheels[w];
-        const idx = i * 4 + w;
-        const px = this.prevWheel[idx * 2];
-        const py = this.prevWheel[idx * 2 + 1];
-        const marking = moving && ws.onGround && (ws.locked || ws.spinning || ws.utilisation > 0.98);
-        if (marking && this.prevValid[idx] === 1) {
-          const dx = ws.x - px;
-          const dy = ws.y - py;
-          const d2 = dx * dx + dy * dy;
-          if (d2 > 1e-4 && d2 < 16) {
-            const kind = ws.surface;
-            const hard = kind === 'asphalt' || kind === 'concrete' || kind === 'wet_asphalt' || kind === 'curb';
-            sctx.strokeStyle = hard ? 'rgba(8,8,10,0.28)' : kind === 'snow' || kind === 'ice' ? 'rgba(120,140,160,0.25)' : 'rgba(70,58,42,0.28)';
-            sctx.beginPath();
-            sctx.moveTo(px, py);
-            sctx.lineTo(ws.x, ws.y);
-            sctx.stroke();
-          }
-        }
-        this.prevWheel[idx * 2] = ws.x;
-        this.prevWheel[idx * 2 + 1] = ws.y;
-        this.prevValid[idx] = 1;
-      }
-    }
+    this.updateHud(race, snap);
   }
 
   // ------------------------------------------------------------------ HUD
@@ -1396,23 +1242,20 @@ class RaceView {
   }
 
   private drawMinimap(race: Race, snap: RaceSnapshot): void {
-    const ti = this.trackImg;
+    const map = this.minimapMap;
     const thumb = this.minimapThumb;
     const mctx = this.minimap.getContext('2d');
-    if (!ti || !thumb || !mctx) return;
+    if (!map || !thumb || !mctx) return;
     const mw = this.minimap.width;
     const mh = this.minimap.height;
     mctx.setTransform(1, 0, 0, 1, 0, 0);
     mctx.clearRect(0, 0, mw, mh);
     mctx.drawImage(thumb, 0, 0);
-    const s = Math.min(mw / ti.width, mh / ti.height);
-    const ox = (mw - ti.width * s) / 2;
-    const oy = (mh - ti.height * s) / 2;
-    const dpr = mw / 200;
+    const dpr = mw / MINIMAP_W;
     for (let r = snap.order.length - 1; r >= 0; r--) {
       const car = race.cars[snap.order[r]];
-      const px = ox + (car.state.x - ti.originX) * ti.scale * s;
-      const py = oy + (ti.originY - car.state.y) * ti.scale * s;
+      const px = map.X(car.state.x) * dpr;
+      const py = map.Y(car.state.y) * dpr;
       const me = car.index === this.playerIndex;
       mctx.beginPath();
       mctx.arc(px, py, (me ? 4.5 : 3) * dpr, 0, Math.PI * 2);

@@ -1,0 +1,34 @@
+# electron-builder configuration — `npm run desktop:dist` (see docs/notes/desktop.md).
+appId: dev.racers.game
+productName: RACERS
+copyright: RACERS contributors
+directories:
+  output: release
+  buildResources: electron/build
+files:
+  - dist/**
+  - dist-electron/**
+  - package.json
+asar: true
+# No code signing is configured: unsigned builds show the usual OS warnings on first launch.
+# Set CSC_LINK / CSC_KEY_PASSWORD (and APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD for notarisation) in CI.
+win:
+  target:
+    - nsis
+    - zip
+  artifactName: ${productName}-${version}-win-${arch}.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+mac:
+  target:
+    - dmg
+    - zip
+  category: public.app-category.games
+  artifactName: ${productName}-${version}-mac-${arch}.${ext}
+linux:
+  target:
+    - AppImage
+    - tar.gz
+  category: Game
+  artifactName: ${productName}-${version}-linux-${arch}.${ext}

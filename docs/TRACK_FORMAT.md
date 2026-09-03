@@ -194,6 +194,19 @@ helpful mid-way (ridgeway's Final Corner: 30 m at −2°, then a fourth segment
 start). Check with `compileTrack(spec).poseAt(s, ±width/2).z`: on an off-camber stretch
 the outside edge must be the lower one.
 
+## Loading your own tracks (desktop app)
+
+The desktop build scans `<user data>/tracks/*.json` at start-up (menu → *Game → Open tracks folder*,
+or the *Track mods* panel on the Race setup screen; *Reload tracks* re-scans without a restart). Each
+file must be a single `TrackSpec` (format 1). Files that fail to parse or that `validateTrack`
+rejects are listed with the reason; ids must be unique and cannot reuse a built-in id. Warnings
+(closure error above 2 m, sharp hairpins) still load. In the browser build only the built-in tracks
+in `src/tracks/` are available — add a file there and an entry in `src/tracks/index.ts`.
+
+The 3D view builds the road mesh straight from the compiled samples: width, lanes (curbs), banking
+and grade all appear as authored; the shoulder is a 7 m band of the `shoulder` surface, the terrain
+beyond it is generated.
+
 ## Worked example
 
 A ~482 m test loop: two straights and two 180° left turns (radius 50 → turn length

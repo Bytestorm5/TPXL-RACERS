@@ -1,6 +1,10 @@
 /**
- * localStorage persistence — every read is version-guarded (try/catch + shape check) and
- * silently resets on mismatch so a stale or hand-edited save can never crash the UI.
+ * Persistence — every read is version-guarded (try/catch + shape check) and silently resets on
+ * mismatch so a stale or hand-edited save can never crash the UI.
+ *
+ * Backend: localStorage in the browser; in the desktop shell the preload bridge
+ * (`window.racersDesktop.storage`, JSON files under the app's user-data folder) is used instead.
+ * `setStorageBackend` lets tests inject one.
  *
  * Keys:
  *   racers.cars.v1   { format: 1, cars: CarBuild[], selectedId?: string }
@@ -8,6 +12,7 @@
  *   racers.best.v1   { format: 1, best: Record<`${trackId}|${carId}`, number> }
  */
 import type { CarBuild } from '../design/types';
+import { desktop, type DesktopStorage } from './desktop';
 
 export const KEYS = {
   cars: 'racers.cars.v1',
@@ -15,12 +20,37 @@ export const KEYS = {
   best: 'racers.best.v1',
 } as const;
 
-function storage(): Storage | null {
+export type StorageBackend = DesktopStorage;
+
+let override: StorageBackend | null | undefined;
+
+/** Inject a backend (tests) or `null` to restore auto-detection. */
+export function setStorageBackend(b: StorageBackend | null): void {
+  override = b ?? undefined;
+}
+
+function localBackend(): StorageBackend | null {
   try {
-    return typeof localStorage !== 'undefined' ? localStorage : null;
+    if (typeof localStorage === 'undefined') return null;
+    const ls = localStorage;
+    return { get: (k) => ls.getItem(k), set: (k, v) => ls.setItem(k, v), remove: (k) => ls.removeItem(k) };
   } catch {
     return null;
   }
+}
+
+function storage(): StorageBackend | null {
+  if (override) return override;
+  const d = desktop();
+  if (d) return d.storage;
+  return localBackend();
+}
+
+/** Where saves live: 'desktop' (JSON files), 'browser' (localStorage) or 'none'. */
+export function storageKind(): 'desktop' | 'browser' | 'none' {
+  if (override) return 'browser';
+  if (desktop()) return 'desktop';
+  return localBackend() ? 'browser' : 'none';
 }
 
 /** Read + parse + validate; anything wrong → null (and the key is dropped). */
@@ -28,7 +58,7 @@ export function loadJson<T>(key: string, validate: (v: unknown) => v is T): T | 
   const s = storage();
   if (!s) return null;
   try {
-    const raw = s.getItem(key);
+    const raw = s.get(key);
     if (raw == null) return null;
     const parsed: unknown = JSON.parse(raw);
     if (validate(parsed)) return parsed;
@@ -36,7 +66,7 @@ export function loadJson<T>(key: string, validate: (v: unknown) => v is T): T | 
     /* fall through: reset */
   }
   try {
-    s.removeItem(key);
+    s.remove(key);
   } catch {
     /* ignore */
   }
@@ -47,7 +77,7 @@ export function saveJson(key: string, value: unknown): void {
   const s = storage();
   if (!s) return;
   try {
-    s.setItem(key, JSON.stringify(value));
+    s.set(key, JSON.stringify(value));
   } catch {
     /* quota / private mode: ignore */
   }

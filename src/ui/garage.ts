@@ -11,6 +11,7 @@ import { FIELD_RANGES } from '../design/parts';
 import type { AutoTuneTarget, BuildAnalysis, BuildWarning, CarBuild, HandlingIntent } from '../design/types';
 import { estimateLapTime } from '../sim/ai';
 import type { VehicleSpec } from '../sim/types';
+import { Showroom } from '../render3d/showroom';
 import { drawEngineChart, drawGearChart } from './charts';
 import { append, clear, h, modal, Text, toast, type Child } from './dom';
 import { fieldLabel, GEAR_SHAPE_PATHS, getPath, SECTIONS, setPath, type FieldDesc, type SectionDesc } from './fields';
@@ -60,6 +61,8 @@ class GarageScreen {
   private readonly editorHead = h('div', { class: 'editor-head' });
   private readonly editorBody = h('div', { class: 'editor-body' });
   private readonly analysisEl = h('aside', { class: 'garage-analysis' });
+  private readonly showroomCanvas = h('canvas', { class: 'showroom', 'aria-label': '3D preview of the car (drag to orbit, wheel to zoom)' });
+  private showroom: Showroom | null = null;
   private readonly engineCanvas = h('canvas', { class: 'chart', 'aria-label': 'Engine torque and power vs rpm' });
   private readonly gearCanvas = h('canvas', { class: 'chart', 'aria-label': 'Wheel force per gear vs speed' });
   private readonly summaryText = new Text('p', 'summary');
@@ -109,6 +112,13 @@ class GarageScreen {
     root.appendChild(this.el);
     this.renderLists();
     this.renderEditor();
+    try {
+      this.showroom = new Showroom(this.showroomCanvas);
+    } catch (err) {
+      // no WebGL: the garage works without the preview
+      console.warn('showroom unavailable:', err);
+      this.showroomCanvas.hidden = true;
+    }
     this.recompute();
     window.addEventListener('resize', this.onResize);
     document.addEventListener('keydown', this.onKey);
@@ -117,6 +127,10 @@ class GarageScreen {
   unmount(): void {
     window.removeEventListener('resize', this.onResize);
     document.removeEventListener('keydown', this.onKey);
+    if (this.showroom) {
+      this.showroom.dispose();
+      this.showroom = null;
+    }
     if (this.estimateTimer) {
       window.clearTimeout(this.estimateTimer);
       this.estimateTimer = 0;
@@ -568,6 +582,8 @@ class GarageScreen {
       INTENTS.map((i) => h('option', { value: i.value, title: i.hint, selected: i.value === this.intent }, i.label)),
     );
     this.analysisEl.append(
+      h('div', { class: 'panel-title' }, 'Showroom'),
+      this.showroomCanvas,
       h('div', { class: 'panel-title' }, 'Analysis'),
       this.summaryText.el,
       this.metricsEl,
@@ -604,6 +620,7 @@ class GarageScreen {
     this.analysis = analyzeBuild(this.build, this.spec);
     this.renderAnalysis();
     this.drawCharts();
+    this.showroom?.setSpec(this.spec);
     debugHook.analysis = this.analysis;
     debugHook.build = this.build;
     this.scheduleEstimate();

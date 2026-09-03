@@ -62,7 +62,9 @@ function waitForServer(url, timeoutMs = 30000) {
   });
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** Wall-time multiplier for the real-time parts: raised when the 3D view runs on a software rasterizer. */
+let SLOW = 1;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms * SLOW));
 const shot = (page, name) => page.screenshot({ path: path.join(SHOTS, name) });
 
 // ---- helpers evaluated in the page (all read window.__racers.race) ------------------------------
@@ -166,7 +168,7 @@ async function selectTrackAndStart(page, base, { trackId, laps, opponents, playe
 }
 
 async function waitStarted(page, timeoutMs = 8000) {
-  await page.waitForFunction(() => window.__racers.race.race.snapshot().started, null, { timeout: timeoutMs });
+  await page.waitForFunction(() => window.__racers.race.race.snapshot().started, null, { timeout: timeoutMs * SLOW });
 }
 
 async function main() {
@@ -183,7 +185,8 @@ async function main() {
   const t0 = Date.now();
   try {
     await waitForServer(base);
-    browser = await chromium.launch({ executablePath: CHROMIUM, headless: true });
+    // WebGL in headless Chromium: ANGLE on SwiftShader (software) unless a GPU is exposed
+    browser = await chromium.launch({ executablePath: CHROMIUM, headless: true, args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     page.on('console', (m) => {
       if (m.type() === 'error') problems.push(`console.error: ${m.text()}`);
@@ -360,6 +363,17 @@ async function main() {
     if (!((await page.evaluate(HOOK.snapshot)).time > tAfterMenu)) fail('race: the race did not resume after closing the pause menu');
     await page.keyboard.press('-');
 
+    // camera modes: C cycles chase → hood → top → tv → chase; each renders without errors
+    const modes = [];
+    for (let i = 0; i < 4; i++) {
+      await page.keyboard.press('c');
+      await sleep(120);
+      modes.push(await page.evaluate(() => window.__racers.race.cameraMode));
+      await shot(page, `09b-camera-${modes[modes.length - 1]}.png`);
+    }
+    if (modes.join(',') !== 'hood,top,tv,chase') fail(`race: camera cycle wrong: ${modes.join(',')}`);
+    log('race: camera modes ok (hood, top, tv, chase)');
+
     // ---- two laps of race time: autopilot on the player car, AI opponents ----------------------
     await page.evaluate(() => window.__racers.race.autopilot(true));
     await page.evaluate(() => window.__racers.race.perfReset());
@@ -457,7 +471,14 @@ async function main() {
       `perf (8 cars, headless): ${perf8.fps.toFixed(0)} fps · frame avg ${perf8.frameAvgMs.toFixed(1)} / p95 ${perf8.frameP95Ms.toFixed(1)} / max ${perf8.frameMaxMs.toFixed(1)} ms · sim avg ${perf8.simAvgMs.toFixed(2)} p95 ${perf8.simP95Ms.toFixed(2)} max ${perf8.simMaxMs.toFixed(2)} ms · render avg ${perf8.renderAvgMs.toFixed(2)} p95 ${perf8.renderP95Ms.toFixed(2)} max ${perf8.renderMaxMs.toFixed(2)} ms`,
     );
     const work8 = perf8.simAvgMs + perf8.renderAvgMs;
-    if (work8 > 20) fail(`perf: ${work8.toFixed(1)} ms of sim + render per frame with 8 cars (budget 20 ms)`);
+    const rs8 = await page.evaluate(() => window.__racers.race.renderStats());
+    const software = /swiftshader|llvmpipe|software/i.test(rs8.gpu);
+    log(`render: gpu "${rs8.gpu}" · ${rs8.calls} draw calls · ${rs8.triangles} triangles/frame · road mesh ${rs8.trackTriangles} tris`);
+    if (!(rs8.calls > 0 && rs8.triangles > 0)) fail(`render: nothing drawn (${JSON.stringify(rs8)})`);
+    // the 20 ms budget is for a real GPU; a software rasterizer (headless CI) only has to keep the sim under budget
+    if (software) {
+      if (perf8.simAvgMs > 20) fail(`perf: ${perf8.simAvgMs.toFixed(1)} ms of sim per frame with 8 cars (budget 20 ms)`);
+    } else if (work8 > 20) fail(`perf: ${work8.toFixed(1)} ms of sim + render per frame with 8 cars (budget 20 ms)`);
     await shot(page, '11-race-8cars.png');
     await assertHudClean(page, '8 cars');
 
