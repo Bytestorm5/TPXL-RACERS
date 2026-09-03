@@ -396,7 +396,10 @@ export interface WheelState {
 }
 
 export interface VehicleState {
-  /** World position of the CG projected on the ground. */
+  /**
+   * World position of the CG: x, y in the ground plane and z the CG HEIGHT above the world datum
+   * (≈ road.z + cgHeight when settled; the UI's lift height is z − road.z − cgHeight).
+   */
   x: number;
   y: number;
   z: number;

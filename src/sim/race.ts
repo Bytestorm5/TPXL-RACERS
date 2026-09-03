@@ -178,6 +178,9 @@ export const STUCK_RESET_DELAY = 10;
 export const RESET_MAX_GRADE = 0.05;
 export const RESET_FLAT_GRADE = 0.03;
 export const RESET_BACKOFF_M = 100;
+/** Repeated resets within this distance (m) of the previous one back off RESET_BACKOFF_M further each time, up to this maximum. */
+export const RESET_STREAK_DISTANCE = 150;
+export const RESET_BACKOFF_MAX_M = 600;
 /** Pre-heated start (formation-lap simplification): tyres this far below their optimum (°C), brakes at this temperature. */
 export const PREHEAT_TYRE_BELOW_OPTIMAL = 15;
 export const PREHEAT_BRAKE_TEMP = 120;
@@ -285,6 +288,9 @@ interface CarInternal {
   rearOff: number;
   /** Broad-phase reach: farthest circle extent from the CG. */
   reach: number;
+  /** Arc length of the last reset and how many resets in a row landed near it (escalating back-off). */
+  lastResetS: number;
+  resetStreak: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +385,8 @@ class RaceImpl implements Race {
         frontOff,
         rearOff,
         reach: Math.max(Math.abs(frontOff), Math.abs(rearOff)) + radius,
+        lastResetS: NaN,
+        resetStreak: 0,
       });
       this.order.push(i);
     }
@@ -464,7 +472,12 @@ class RaceImpl implements Race {
       const c = track.centreAt(proj.s);
       if (Number.isFinite(proj.s) && proj.distance <= c.width / 2 + RESET_MAX_OFF_TRACK) s = proj.s;
     }
-    s = this.gentlerResetPoint(s);
+    // Repeated resets near the same spot (a climb the car cannot start on) back off further each time:
+    // 100 m, 200 m, … up to RESET_BACKOFF_MAX_M, so the car attacks the hill with momentum.
+    const near = Number.isFinite(it.lastResetS) && Math.abs(this.sDelta(it.lastResetS, s)) < RESET_STREAK_DISTANCE;
+    it.resetStreak = near ? it.resetStreak + 1 : 0;
+    it.lastResetS = s;
+    s = this.gentlerResetPoint(s, Math.min(RESET_BACKOFF_M * (1 + it.resetStreak), RESET_BACKOFF_MAX_M), it.resetStreak > 0);
     const pose = track.poseAt(s, 0);
     resetVehicleState(car.entry.spec, st, { x: pose.x, y: pose.y, heading: pose.heading }, track);
     // A reset is a "pushed back onto the road" moment: with pre-heated starts the tyres come back at
@@ -504,13 +517,13 @@ class RaceImpl implements Race {
    * reset lands on the same ramp forever. Back off (never forward) to the flattest point within
    * RESET_BACKOFF_M when the grade at `s` exceeds RESET_MAX_GRADE.
    */
-  private gentlerResetPoint(s: number): number {
+  private gentlerResetPoint(s: number, backoff: number, force: boolean): number {
     const track = this.track;
     const gradeAt = (q: number): number => Math.abs(track.centreAt(q).grade);
-    if (!(gradeAt(s) > RESET_MAX_GRADE)) return s;
+    if (!force && !(gradeAt(s) > RESET_MAX_GRADE)) return s;
     let best = s;
     let bestGrade = gradeAt(s);
-    for (let d = 5; d <= RESET_BACKOFF_M; d += 5) {
+    for (let d = 5; d <= backoff; d += 5) {
       let q = s - d;
       if (this.closed) q = ((q % this.length) + this.length) % this.length;
       else if (q < 0) break;
@@ -519,9 +532,20 @@ class RaceImpl implements Race {
         best = q;
         bestGrade = g;
       }
-      if (bestGrade <= RESET_FLAT_GRADE) break;
+      if (bestGrade <= RESET_FLAT_GRADE && d >= (force ? backoff : 0)) break;
     }
     return best;
+  }
+
+  /** Signed arc-length difference b − a (wrapped on circuits). */
+  private sDelta(a: number, b: number): number {
+    let d = b - a;
+    if (this.closed) {
+      const L = this.length;
+      d = ((d % L) + L) % L;
+      if (d > L / 2) d -= L;
+    }
+    return d;
   }
 
   private goGreen(): void {

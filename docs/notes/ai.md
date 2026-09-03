@@ -183,3 +183,12 @@ on ridgeway (line cached after the first car).
    for `lapTimeEstimateS` on ridgeway.
 5. The tabletop cap depends on the profile geometry only; if the track author changes the landing
    zones, `MAX_FLIGHT_M` (45) is the knob.
+
+## Cadence (integrator note)
+
+`AiDriver.drive(state, others, dt)` is cadence-sensitive: its filters, latches and timers (steer
+lag and rate limit, traction-control recovery, stuck / recovery timers, `stuckFor`, the 10 s race-start
+handling) integrate `dt` and assume they see every fixed substep. Call it once per `SIM_DT` substep
+with the live state, as `race.ts` does — calling it once per rendered frame with a larger `dt`, or
+skipping substeps, changes the driver's behaviour. After re-posing a car call `driver.reset()`
+(`race.resetCar` does).

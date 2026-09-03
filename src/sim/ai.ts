@@ -1009,6 +1009,7 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
     hillStarts = 0;
     stuckFor = 0;
     throttleDemand = 0;
+    driveTime = 0;
     hintS = undefined;
     mode = 'normal';
     stuckTime = 0;
@@ -1122,7 +1123,8 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
     const xLat = clamp((Math.abs(state.ay) * spec.cgHeight) / (0.5 * Math.max(Math.min(spec.trackFront, spec.trackRear), 0.5) * G), 0, 0.8);
     const pF = demF > 1 ? Math.max((1 - xLat) * capF - ebF, 0) / demF : 1;
     const pR = demR > 1 ? Math.max((1 - xLat) * capR - ebR, 0) / demR : 1;
-    return clamp(Math.min(pF, pR) * brakeCapSkill, 0.12, 1);
+    // floor scales with the surface: on grass / ice even 12 % pedal locks cold tyres
+    return clamp(Math.min(pF, pR) * brakeCapSkill, 0.12 * clamp01(surface.grip), 1);
   };
 
   /** Manual gearbox: shift edges from the road-speed rpm (never from a spinning wheel). Gear must be ≥ 1. */
@@ -1347,7 +1349,9 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
       const roomRight = o.road.lateral + roomT;
       const side = roomLeft > roomRight ? 1 : -1;
       const desired = clamp(o.road.lateral + side * (carWidth + 0.8), -roomT, roomT);
-      const weight = clamp01(1.2 - dAhead / 25) * (0.5 + 0.5 * aggression);
+      // in the first seconds of a race the pack is slow and dense: big offsets push cars onto the grass
+      const startDamp = driveTime < 10 && speed < 11 ? 0.3 : 1;
+      const weight = clamp01(1.2 - dAhead / 25) * (0.5 + 0.5 * aggression) * startDamp;
       const cand = (desired - lineAtT) * weight;
       if (Math.abs(cand) > Math.abs(avoidTarget)) avoidTarget = cand;
       const gap = dAhead - carLength;
@@ -1413,6 +1417,9 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
     if (anyDrivenSpinning(state)) tcScale = Math.max(tcFloor(state), Math.min(tcScale, 1 - tcReduction) - 4 * h);
     else tcScale = Math.min(1, tcScale + 0.5 * h);
     throttle *= tcScale;
+    // launch traction control: while a driven wheel spins below ~60 km/h the throttle is capped hard —
+    // a 300 kW car lighting its rears at 20 km/h in the pack yaws into its neighbours
+    if (speed < 16.7 && anyDrivenSpinning(state)) throttle = Math.min(throttle, 0.35);
     // slide catch: yawing much faster than the path needs, or a body slip angle beyond what this
     // surface's tyres want (loose surfaces like big angles) → lift; the steer already counter-steers
     const yawExcess = Math.abs(state.yawRate) - Math.max(Math.abs(vx * kPursuit), Math.abs(vx * sampleArray(track, line.curvature, s)));

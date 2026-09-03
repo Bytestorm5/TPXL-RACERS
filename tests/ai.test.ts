@@ -155,8 +155,13 @@ function runLaps(spec: VehicleSpec, trackId: string, laps: number, skill: number
     if (state.wrecked || (driver.stuckFor ?? 0) > 10) {
       if (state.wrecked) run.wrecks++;
       else run.stuckResets++;
-      const pose = track.poseAt(s, 0);
+      // like race.ts: never re-pose on a jump ramp / climb — back off 60 m so the car can move off again
+      let sBack = s - 60;
+      if (track.spec.closed) sBack = ((sBack % L) + L) % L;
+      else sBack = Math.max(0, sBack);
+      const pose = track.poseAt(sBack, 0);
       resetVehicleState(spec, state, { x: pose.x, y: pose.y, heading: pose.heading }, track);
+      prevS = sBack;
       driver.reset?.();
       offT = 0;
     }

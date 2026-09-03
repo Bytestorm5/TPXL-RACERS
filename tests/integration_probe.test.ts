@@ -653,3 +653,36 @@ describe('hill start on grass at +8 % (vehicle.ts torque-balance regression)', (
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Race starts (UI-agent finding): the pack must not scatter onto the grass
+// ---------------------------------------------------------------------------
+
+describe('race start: a 6-car AI clubsprint start stays on the track', () => {
+  it('seed 42, pre-heated, default + 5 presets: at most 1 car leaves the track in the first 35 s', { timeout: SLOW }, () => {
+    const track = trackOf('clubsprint');
+    const specs = [compileBuild(defaultBuild()), ...['Club Hatch', 'Track Weapon', 'Muscle', 'Kei Racer', 'Drift Missile'].map(preset)];
+    const entries: RaceEntry[] = specs.map((spec, i) => ({ spec, driver: { kind: 'ai', skill: 0.8, aggression: 0.5, seed: 7 + i }, name: spec.name }));
+    const race = createRace({ track, entries, laps: 1, seed: 42 });
+    race.start();
+    const offTrackTime = specs.map(() => 0);
+    const leftTrack = specs.map(() => false);
+    let t = 0;
+    while (t < 35) {
+      race.step(SIM_DT);
+      t += SIM_DT;
+      for (let i = 0; i < race.cars.length; i++) {
+        const st = race.cars[i].state;
+        expect(Number.isFinite(st.x + st.vx + st.heading)).toBe(true);
+        // "left the track": the CG beyond the edge (a wheel on the curb / shoulder is racing)
+        if (!st.road.onTrack) {
+          offTrackTime[i] += SIM_DT;
+          if (offTrackTime[i] > 0.5) leftTrack[i] = true;
+        }
+      }
+    }
+    const left = specs.filter((_, i) => leftTrack[i]).map((s) => s.name);
+    console.log(`6-car clubsprint start, first 35 s: cars off the track ${left.length > 0 ? left.join(', ') : 'none'}; sector-1 progress ${race.cars.map((c) => c.state.road.s.toFixed(0)).join(' / ')} m`);
+    expect(left.length).toBeLessThanOrEqual(1);
+  });
+});
