@@ -216,7 +216,7 @@ function rearLoadLong(c: CarModel, fx: number): number {
   return L > 0 ? L : 0;
 }
 
-interface LateralLoads {
+export interface LateralLoads {
   frontOuter: number;
   frontInner: number;
   rearOuter: number;
@@ -250,6 +250,17 @@ function lateralLoads(c: CarModel, ay: number, out: LateralLoads): LateralLoads 
   out.rearInner = Math.max(0, Wr / 2 - dFr);
   out.rearOuter = Wr - out.rearInner;
   return out;
+}
+
+/**
+ * Per-wheel loads (N) in a steady corner at `ayG` lateral g and `speed` m/s (aero included) — the
+ * same quasi-static model the handling analysis uses (roll-stiffness split + roll-centre terms).
+ * Exposed for the garage's load-transfer chart.
+ */
+export function cornerLoads(spec: VehicleSpec, ayG: number, speed: number = ANALYSIS.skidpadSpeed): LateralLoads {
+  const c = carModel(spec);
+  resistance(c, speed);
+  return lateralLoads(c, ayG * G, { frontOuter: 0, frontInner: 0, rearOuter: 0, rearInner: 0 });
 }
 
 // ---------------------------------------------------------------------------

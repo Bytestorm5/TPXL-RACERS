@@ -227,13 +227,18 @@ describe('probe: documented monotonic trends', () => {
       expect(f).toBeLessThanOrEqual(prev + 1e-9);
       prev = f;
     }
+    // asymmetric window: both sides fall monotonically away from the optimum, the hot (greasy) side
+    // never below the cold (glassy) side at the same distance
     prev = Infinity;
+    let prevCold = Infinity;
     for (let d = 0; d <= 150; d += 2) {
       const hot = tireForces(spec, input({ temp: 80 + d, slipAngle: spec.peakSlipAngle })).maxForce;
       const cold = tireForces(spec, input({ temp: 80 - d, slipAngle: spec.peakSlipAngle })).maxForce;
-      expect(hot).toBeCloseTo(cold, 9);
+      expect(hot).toBeGreaterThanOrEqual(cold - 1e-9);
       expect(hot).toBeLessThanOrEqual(prev + 1e-9);
+      expect(cold).toBeLessThanOrEqual(prevCold + 1e-9);
       prev = hot;
+      prevCold = cold;
     }
   });
 

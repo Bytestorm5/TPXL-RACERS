@@ -18,9 +18,10 @@ src/ui/storage.ts     version-guarded localStorage (try/catch + shape validators
 src/ui/dom.ts         h(), Text/Bar/ClassSwitch (write-on-change), toast(), modal()
 src/ui/format.ts      fmtLap / fmtDelta / fmtStep / humanizePath
 src/ui/landing.ts     #/            title, Garage / Quick race / Race setup, how-it-works
-src/ui/garage.ts      #/garage      car list · build editor · live analysis + charts + warnings + auto-tune + estimated lap
-src/ui/fields.ts        editor descriptors: sections, discrete options; continuous fields come from FIELD_RANGES
-src/ui/charts.ts        engine torque/power vs rpm; wheel force per gear vs speed + drag + traction line
+src/ui/garage.ts      #/garage      car list · [showroom | charts of the active tab] · tabbed editor · analysis + warnings + auto-tune + estimated lap
+src/ui/fields.ts        editor descriptors: sections, discrete options, TABS (which sections each tab shows); continuous fields come from FIELD_RANGES
+src/ui/charts.ts        generic line/bar plotters + one chart set per tab (corner weights, load transfer, engine, gears, tyre temperature window, tyre load, ride frequency, brake fade, lockup vs bias, aero)
+src/ui/units.ts         display units (metric / imperial / auto from the locale): conversions, garage field mapping, text localisation
 src/ui/raceSetup.ts   #/race        track cards (minimaps), car, laps, opponents (default line-up), AI skill, warm tyres
 src/ui/raceView.ts    #/race/run    fixed-step loop, RaceScene (3D), keyboard + gamepad input, HUD, minimap, sectors, telemetry, overlays, results (raceSummary)
 src/ui/gamepad.ts       standard-mapping gamepad polled per frame (edges for shift / camera / reset / menu)
@@ -35,6 +36,22 @@ tests/e2e/ui_check.mjs  Playwright drive-through with the real race (not wired i
 **Router.** `location.hash` → `route()`: unmount the current screen, mount the new one. Unknown hashes
 land on the landing page. A screen that throws while mounting shows an error panel instead of a blank page.
 `body.in-race` hides the top bar on the race screen.
+
+**Garage layout.** Main column: the 3D showroom (top-left) beside the charts of the active tab
+(top-right; one chart fills the height, two stack), then the tab strip (chassis · engine ·
+drivetrain · tyres · suspension · brakes · aero, a warning dot per tab) and the active tab's fields.
+All panes are in the DOM (inactive ones `hidden`) so slider selectors keep working; the active tab
+is remembered for the session. `TAB_CHARTS` in garage.ts maps tabs to chart drawers; every chart
+plots the same sim/analysis functions the knobs feed (`tireTempFactor`, `tirePeakMu`, `cornerLoads`,
+`brakeEffectiveness`, `analyzeLockup`, `aeroForcesInto`, `wheelTorqueCurve`). The analysis column
+(summary, metrics, balance bars, auto-tune, warnings) is unchanged on the right.
+
+**Units.** `src/ui/units.ts`: 'auto' (locale region US / LR / MM → imperial), 'metric', 'imperial';
+persisted as `racers.prefs.v1`, toggled in the top bar (the screen re-mounts on change). Sliders stay
+SI; the number box beside each slider shows and accepts display units (`fieldUnits`: kg→lb, mm→in,
+kPa→psi, bar→psi, N/mm→lb/in). Metrics, HUD (speed, temperatures, ride height, telemetry), charts
+and the setup cards convert at the display boundary; analysis sentences go through `localizeText`
+(regex over km/h, °C, kg, kW, Nm, kPa, mm, m, "0–100").
 
 **Garage data flow.** Every control change → `edit(mutate)` → `normalizeBuild` → `session.updateCar`
 (debounced save 250 ms) → `compileBuild` → `analyzeBuild` → metrics/warnings/charts refresh →
@@ -152,6 +169,7 @@ Garage and setup are plain focusable DOM (tab / enter / space work on car and tr
 | `racers.cars.v1` | `{ format: 1, cars: CarBuild[], selectedId }` — every build is re-normalised on load |
 | `racers.setup.v1` | `{ format: 1, trackId, laps, playerCarId, opponents: string[], aiSkill, preheatTyres? }` |
 | `racers.best.v1` | `{ format: 1, best: { "<trackId>|<carId>": seconds } }` |
+| `racers.prefs.v1` | `{ format: 1, units: 'auto' | 'metric' | 'imperial' }` |
 
 All reads go through `loadJson(key, validator)`: parse failure or shape mismatch removes the key and
 falls back to defaults. Writes are try/catch (quota / private mode). In the desktop shell the same

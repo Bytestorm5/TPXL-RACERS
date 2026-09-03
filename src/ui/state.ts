@@ -9,7 +9,8 @@ import { compileTrack, validateTrack, type CompiledTrack } from '../sim/track';
 import type { TrackSpec } from '../sim/trackTypes';
 import { BUILTIN_TRACKS } from '../tracks/index';
 import { desktop } from './desktop';
-import { isBestFile, isCarsFile, isSetupFile, KEYS, loadJson, saveJson, type SetupFile } from './storage';
+import { isBestFile, isCarsFile, isPrefsFile, isSetupFile, KEYS, loadJson, saveJson, type SetupFile } from './storage';
+import { setUnitPreference, unitPreference, type UnitPreference } from './units';
 
 /** A user track file as loaded from the desktop tracks folder (docs/TRACK_FORMAT.md). */
 export interface UserTrack {
@@ -122,6 +123,21 @@ export class Session {
 
     const best = loadJson(KEYS.best, isBestFile);
     if (best) this.best = { ...best.best };
+
+    const prefs = loadJson(KEYS.prefs, isPrefsFile);
+    setUnitPreference(prefs?.units ?? 'auto');
+  }
+
+  // ---------------------------------------------------------------- prefs
+
+  get units(): UnitPreference {
+    return unitPreference();
+  }
+
+  /** Display units ('auto' follows the locale); persisted in racers.prefs.v1. */
+  setUnits(p: UnitPreference): void {
+    setUnitPreference(p);
+    saveJson(KEYS.prefs, { format: 1, units: p });
   }
 
   // ---------------------------------------------------------------- cars

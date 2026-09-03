@@ -63,8 +63,17 @@ append to the relevant section when you simplify something. (Merged from every m
   clubsprint): the Track Weapon's medium slicks settle around their 92 °C optimum, sport tyres
   ~10–15 °C below their 70 °C optimum, a 2 s burnout costs ~20 °C; a FWD car still runs its driven
   fronts ~30 °C hotter than its rears.
-- Grip window is a symmetric Gaussian on a floor — no graining / blistering hysteresis; over-heating
-  costs the same as being cold.
+- Grip window is ASYMMETRIC: below the optimum a Gaussian on `coldGripFloor` (glassy rubber, 0.4–0.8
+  by compound), above it a wider Gaussian (1.6 × `tempWindow`) on `hotGripFloor` (greasy rubber,
+  0.70–0.85) — a tyre 40 °C over its optimum keeps ~85–90 % of its grip, one 40 °C under keeps
+  55–75 %. No graining / blistering hysteresis, no thermal wear. (The first model was symmetric
+  with one floor: three hard stops on warm slicks then cut grip to ~50 %, which read as "the tyres
+  glide"; hot rubber does not do that — it goes off, gradually.)
+- One temperature per tyre with an effective thermal mass of ≈ 1.5 kJ/°C (`TIRE_HEATING_BASE`
+  0.65e-3 °C/J) — about a kilogram of tread, not the whole tyre: the surface layer is what the grip
+  responds to. Heating and cooling are scaled together, so the hot-lap equilibrium is calibrated,
+  while a single 200 km/h stop on warm slicks costs ~20 °C (the surface spike a real tyre shows),
+  not the 30–40 °C a heavier model with the same equilibrium would need.
 - Load sensitivity linear in load ratio above the optimum (floor 0.25), quadratic penalty below.
   Compile puts `optimalLoad` near the static corner load so the game's 1–2.5× transfers stay on the
   rising side of total force.

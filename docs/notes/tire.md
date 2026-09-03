@@ -22,9 +22,14 @@ thermal update), and a thermal retune of `exampleTireSpec` (it never left ambien
   `mu·load` still rises with load up to `r* = (1 + s)/(2s)` (≈ 3.8× optimal for `s = 0.15`) and
   falls beyond it; compile should therefore put `optimalLoad` near the static wheel load so the
   game's 1–2.5× transfers stay on the rising side. `optimalLoad ≤ 0` disables the effect.
-- **Temperature** (`tireTempFactor`): `floor + (1 − floor)·exp(−ln2·((T − Topt)/window)²)` — 1 at
-  `optimalTemp`, `(1 + floor)/2` at `± tempWindow` (0.775 for the 0.55 floor), → `coldGripFloor`
-  far away. Symmetric: over-heating costs the same as being cold. `tempWindow ≤ 0` disables.
+- **Temperature** (`tireTempFactor`) — asymmetric. Below the optimum
+  `cold + (1 − cold)·exp(−ln2·((T − Topt)/window)²)` with `cold = coldGripFloor` (glassy rubber):
+  1 at `optimalTemp`, `(1 + cold)/2` at `Topt − tempWindow` (0.775 for the 0.55 floor). Above it
+  `hot + (1 − hot)·exp(−ln2·((T − Topt)/(window·hotWindowScale))²)` with `hot = hotGripFloor`
+  (default 0.75, never below the cold floor; `tireHotGripFloor`) and `hotWindowScale` default 1.6
+  (`tireHotWindow`): greasy rubber loses grip gradually — +40 °C keeps ~85–90 %, +80 °C ~78 %, far
+  above → the hot floor. Both branches have zero slope at the optimum (C¹). `tempWindow ≤ 0`
+  disables. Compounds set `hotGripFloor` 0.70 (soft slick) … 0.85 (drift).
 - **Wear**: `1 − wearGripLoss·clamp01(wear)`.
 - **Surface**: `surface.grip × surfaceAffinity[kind]` (default affinity 1).
 

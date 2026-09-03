@@ -80,8 +80,16 @@ export interface TireSpec {
   optimalTemp: number;
   /** Half-width (°C) of the grip window: at optimalTemp ± tempWindow grip is ~75% of peak. */
   tempWindow: number;
-  /** Fraction of peak grip retained far outside the temperature window (0..1). */
+  /** Fraction of peak grip retained far BELOW the temperature window (0..1): cold rubber is glassy. */
   coldGripFloor: number;
+  /**
+   * Optional (added with the asymmetric window): fraction of peak grip retained far ABOVE the window
+   * (0..1). Over-heated rubber goes greasy, not glassy — it keeps most of its grip. Default 0.75
+   * (never below `coldGripFloor`).
+   */
+  hotGripFloor?: number;
+  /** Optional: the hot side's half-width as a multiple of `tempWindow`. Default 1.6 (overheating is gradual). */
+  hotWindowScale?: number;
   /** °C per joule of slip energy absorbed (higher = heats faster; soft compounds & low pressure heat faster). */
   heatingPerJoule: number;
   /** Cooling coefficient: dT/dt = -coolingRate * (1 + speed/20) * (T - ambient). Units 1/s. */

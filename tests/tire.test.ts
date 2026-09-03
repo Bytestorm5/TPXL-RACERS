@@ -16,6 +16,10 @@ import {
   tireSlideRatio,
   tireSurfaceFactor,
   tireTempFactor,
+  tireHotGripFloor,
+  tireHotWindow,
+  DEFAULT_HOT_GRIP_FLOOR,
+  DEFAULT_HOT_WINDOW_SCALE,
   tireWearFactor,
   updateTireState,
   MAX_TAN_SLIP,
@@ -142,20 +146,34 @@ describe('tirePeakMu — temperature window', () => {
     expect(tirePeakMu(spec, OPT_LOAD, 40, 0, 0, ASPHALT)).toBeLessThan(1);
     expect(tirePeakMu(spec, OPT_LOAD, 120, 0, 0, ASPHALT)).toBeLessThan(1);
   });
-  it('is symmetric about optimalTemp', () => {
-    expect(tireTempFactor(spec, 80 - 30)).toBeCloseTo(tireTempFactor(spec, 80 + 30), 12);
+  it('is asymmetric: over-heating (greasy) costs far less than being cold (glassy)', () => {
+    expect(tireTempFactor(spec, 80 + 30)).toBeGreaterThan(tireTempFactor(spec, 80 - 30) + 0.1);
+    // 40 °C over the optimum keeps ~85–90 %; 40 °C under (a 35 °C window, 0.55 floor) ~73 %
+    expect(tireTempFactor(spec, 120)).toBeGreaterThan(0.85);
+    expect(tireTempFactor(spec, 120)).toBeLessThan(0.95);
+    expect(tireTempFactor(spec, 40)).toBeLessThan(0.75);
   });
-  it('is half-way to the floor at optimalTemp ± tempWindow (k = ln 2)', () => {
-    const expected = spec.coldGripFloor + (1 - spec.coldGripFloor) * 0.5;
-    expect(tireTempFactor(spec, 80 + 35)).toBeCloseTo(expected, 12);
-    expect(tireTempFactor(spec, 80 - 35)).toBeCloseTo(expected, 12);
-    expect(expected).toBeCloseTo(0.775, 12);
+  it('is half-way to the cold floor at optimalTemp − tempWindow and to the hot floor at + hotWindow (k = ln 2)', () => {
+    const cold = spec.coldGripFloor + (1 - spec.coldGripFloor) * 0.5;
+    expect(tireTempFactor(spec, 80 - 35)).toBeCloseTo(cold, 12);
+    expect(cold).toBeCloseTo(0.775, 12);
+    const hotFloor = tireHotGripFloor(spec);
+    expect(hotFloor).toBe(0.75);
+    expect(tireHotWindow(spec)).toBeCloseTo(35 * DEFAULT_HOT_WINDOW_SCALE, 12);
+    expect(tireTempFactor(spec, 80 + tireHotWindow(spec))).toBeCloseTo(hotFloor + (1 - hotFloor) * 0.5, 12);
   });
-  it('approaches coldGripFloor far outside the window and never goes below it', () => {
+  it('approaches the cold floor far below, the hot floor far above, never below the cold floor', () => {
     expect(tireTempFactor(spec, -200)).toBeCloseTo(spec.coldGripFloor, 6);
-    expect(tireTempFactor(spec, 1000)).toBeCloseTo(spec.coldGripFloor, 6);
+    expect(tireTempFactor(spec, 1000)).toBeCloseTo(tireHotGripFloor(spec), 6);
     expect(tireTempFactor(spec, -Infinity)).toBeCloseTo(spec.coldGripFloor, 12);
     for (let T = -50; T <= 300; T += 5) expect(tireTempFactor(spec, T)).toBeGreaterThanOrEqual(spec.coldGripFloor - 1e-12);
+  });
+  it('hotGripFloor defaults to 0.75, honours the spec and never drops below coldGripFloor', () => {
+    expect(tireHotGripFloor(exampleTireSpec({ hotGripFloor: undefined }))).toBe(DEFAULT_HOT_GRIP_FLOOR);
+    expect(tireHotGripFloor(exampleTireSpec({ hotGripFloor: 0.6 }))).toBe(0.6);
+    expect(tireHotGripFloor(exampleTireSpec({ hotGripFloor: 0.3, coldGripFloor: 0.55 }))).toBe(0.55);
+    expect(tireHotGripFloor(exampleTireSpec({ hotGripFloor: NaN }))).toBe(DEFAULT_HOT_GRIP_FLOOR);
+    expect(tireHotWindow(exampleTireSpec({ hotWindowScale: 2 }))).toBeCloseTo(70, 12);
   });
   it('is monotonic moving away from the optimum on each side', () => {
     let prev = tireTempFactor(spec, 80);

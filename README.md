@@ -53,7 +53,10 @@ tags (unsigned unless signing secrets are configured).
 
 1. **Garage** (`#/garage`) — pick a preset (Roadster S, Club Hatch, Track Weapon, Gravel Rally, Drift
    Missile, Muscle, Kei Racer, Ice Runner) or your own car. A 3D showroom shows the car as built
-   (wider tyres, ride height, the wing and the colour update live; drag to orbit). Every slider
+   (wider tyres, ride height, the wing and the colour update live; drag to orbit) next to the charts
+   of the tab you are on — corner weights and load transfer, torque and power, wheel force per gear,
+   the tyre temperature window and load sensitivity, ride frequencies, brake fade and lockup vs
+   bias, drag and downforce. The configuration is split into tabs below. Every slider
    re-runs the analysis: 0–100,
    top speed, skidpad g next to the g at which the car *rolls over*, braking distance and which axle
    locks first, brake temperature after ten stops, jump-landing load, downforce, the understeer
@@ -81,6 +84,9 @@ tags (unsigned unless signing secrets are configured).
    until the table is complete. Best laps are remembered per track and car.
 
 *Quick race* on the landing page is your current car against five presets, 3 laps of Clubsprint.
+
+Units: the top bar switches between **Auto** (follows your locale: US → mph, °F, lb, in, psi),
+**Metric** and **Imperial**; the cars themselves are always stored in SI.
 
 ## Keyboard
 

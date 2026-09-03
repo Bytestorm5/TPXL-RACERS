@@ -94,6 +94,8 @@ input[type=color].color-input { width: 34px; height: 30px; border: 1px solid var
 .switch.on { border-color: var(--accent); }
 .switch.on .knob { left: 20px; background: var(--accent); }
 
+.seg-small { padding: 2px 8px; font-size: 11px; }
+.units-toggle { gap: 2px; }
 .tag { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); border: 1px solid var(--line-2); border-radius: 4px; padding: 1px 5px; margin-left: 6px; vertical-align: middle; }
 .badge { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; border-radius: 4px; padding: 1px 6px; margin-left: 6px; background: var(--bg-3); }
 .metric.ok .badge { color: var(--ok); }
@@ -117,12 +119,27 @@ input[type=color].color-input { width: 34px; height: 30px; border: 1px solid var
 .keys { margin-top: 20px; }
 
 /* ---------------------------------------------------------------- garage */
-.garage { display: grid; grid-template-columns: 240px minmax(420px, 1fr) 400px; }
+.garage { display: grid; grid-template-columns: 220px minmax(520px, 1fr) 360px; }
 .garage > * { min-height: 0; overflow: auto; padding: 10px 14px; }
 .garage-cars { border-right: 1px solid var(--line); background: var(--bg-2); }
 .garage-analysis { border-left: 1px solid var(--line); background: var(--bg-2); }
-canvas.showroom { width: 100%; height: 210px; display: block; background: radial-gradient(60% 80% at 50% 60%, #232833, #14161b); border: 1px solid var(--line); border-radius: var(--radius); cursor: grab; touch-action: none; }
+.garage-top { display: grid; grid-template-columns: minmax(280px, 5fr) minmax(340px, 7fr); gap: 12px; margin-bottom: 12px; align-items: stretch; }
+.showroom-wrap { display: flex; flex-direction: column; min-width: 0; }
+canvas.showroom { width: 100%; height: 100%; min-height: 300px; display: block; background: radial-gradient(60% 80% at 50% 60%, #232833, #14161b); border: 1px solid var(--line); border-radius: var(--radius); cursor: grab; touch-action: none; }
 canvas.showroom:active { cursor: grabbing; }
+.charts-wrap { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.charts-wrap .chart-title { margin: 0 0 2px; }
+.charts-wrap canvas.chart { height: 150px; }
+.charts-wrap.single canvas.chart { height: 330px; }
+.tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--line); margin-bottom: 8px; position: sticky; top: 46px; background: var(--bg); z-index: 2; padding: 2px 0; }
+.tab { background: transparent; border: 1px solid transparent; border-bottom: none; color: var(--muted); padding: 7px 14px; border-radius: 6px 6px 0 0; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.tab:hover { color: var(--text); background: var(--bg-2); }
+.tab.active { color: var(--text); background: var(--bg-2); border-color: var(--line); box-shadow: inset 0 2px 0 var(--accent); }
+.tab-pane { padding-bottom: 20px; }
+.tab-pane .section { border: none; background: transparent; margin-bottom: 4px; }
+.tab-pane .section-title { padding: 6px 0 2px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); cursor: default; }
+.tab-pane .section-title::before { content: none; }
+.tab-pane .section-body { padding: 4px 0 10px; }
 .car-list { list-style: none; margin: 0 0 12px; padding: 0; }
 .car-item { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 6px; cursor: pointer; color: var(--muted); }
 .car-item:hover { background: var(--bg-3); color: var(--text); }
@@ -328,7 +345,9 @@ canvas.chart { width: 100%; height: 150px; display: block; background: var(--bg-
 .error-panel pre { white-space: pre-wrap; background: var(--bg-2); padding: 12px; border-radius: 8px; }
 
 @media (max-width: 1100px) {
-  .garage { grid-template-columns: 200px minmax(320px, 1fr) 340px; }
+  .garage { grid-template-columns: 200px minmax(320px, 1fr) 320px; }
+  .garage-top { grid-template-columns: 1fr; }
+  canvas.showroom { min-height: 220px; height: 220px; }
 }
 @media (max-width: 900px) {
   body { overflow: auto; }

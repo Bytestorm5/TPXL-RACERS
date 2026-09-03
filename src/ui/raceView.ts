@@ -30,6 +30,7 @@ import { GamepadInput } from './gamepad';
 import { ROUTES, type Nav, type Screen } from './screen';
 import type { PendingRace, Session } from './state';
 import { drawMinimap, minimapTransform, SURFACE_LABEL, type MinimapTransform } from './trackRender';
+import { fq, speedUnit, U } from './units';
 
 /** Longest sim advance per frame (s): 8 substeps at 120 Hz. Beyond that we run slow-motion. */
 const MAX_SUBSTEPS_PER_FRAME = 8;
@@ -271,7 +272,7 @@ class TyreBox {
     this.el = h('div', { class: 'tyre' }, h('span', { class: 'muted' }, label), this.temp.el, this.wear.el, this.flash.el);
   }
   set(temp: number, wear: number, hue: number, flash: string): void {
-    this.temp.set(`${fmtInt(temp)}°`);
+    this.temp.set(`${fmtInt(U.temp(temp).value)}°`);
     this.wear.set(`wear ${fmtInt(wear * 100)}%`);
     const q = Math.round(hue / 5);
     if (q !== this.lastHue) {
@@ -316,6 +317,7 @@ class WheelRow {
   private lastUtilColor = '';
   constructor(label: string) {
     const tds: HTMLElement[] = [h('td', null, label)];
+    void tds;
     const utilTd = h('td', null, this.util.el);
     tds.push(utilTd);
     for (let i = 0; i < 9; i++) {
@@ -335,14 +337,14 @@ class WheelRow {
     }
     const c = this.cells;
     c[0].set(`${fmtInt(u * 100)}%`);
-    c[1].set(fmtInt(w.load));
+    c[1].set(fmtInt(U.force(w.load).value));
     c[2].set(`${((w.slipAngle * 180) / Math.PI).toFixed(1)}°`);
     c[3].set(w.slipRatio.toFixed(2));
-    c[4].set(`${fmtInt(w.tire.temp)}°`);
+    c[4].set(`${fmtInt(U.temp(w.tire.temp).value)}°`);
     c[5].set(w.onGround ? 'yes' : 'AIR');
-    c[6].set(`${fmtInt(w.compression * 1000)}`);
-    c[7].set(fmtInt(w.brakeTorque));
-    c[8].set(fmtInt(w.driveTorque));
+    c[6].set(U.small(w.compression * 1000).unit === 'in' ? (w.compression * 1000 / 25.4).toFixed(2) : `${fmtInt(w.compression * 1000)}`);
+    c[7].set(fmtInt(U.torque(w.brakeTorque).value));
+    c[8].set(fmtInt(U.torque(w.driveTorque).value));
   }
 }
 
@@ -615,7 +617,7 @@ class RaceView {
     const bc = h(
       'div',
       { class: 'hud-bc' },
-      h('div', { class: 'hud-panel' }, h('div', { class: 'hud-speed' }, this.speedText.el, h('small', null, 'km/h'))),
+      h('div', { class: 'hud-panel' }, h('div', { class: 'hud-speed' }, this.speedText.el, h('small', null, speedUnit()))),
       h('div', { class: 'hud-panel' }, h('div', { class: 'hud-gear' }, this.gearText.el, h('small', null, 'gear'))),
       h(
         'div',
@@ -649,7 +651,7 @@ class RaceView {
     const head = h(
       'tr',
       null,
-      ['wheel', 'util', '%', 'load N', 'slip', 'ratio', 'temp', 'ground', 'comp mm', 'brake Nm', 'drive Nm'].map((t) => h('th', null, t)),
+      ['wheel', 'util', '%', `load ${U.force(0).unit}`, 'slip', 'ratio', `temp ${U.temp(0).unit}`, 'ground', `comp ${U.small(0).unit}`, `brake ${U.torque(0).unit}`, `drive ${U.torque(0).unit}`].map((t) => h('th', null, t)),
     );
     this.wheelRows = ['FL', 'FR', 'RL', 'RR'].map((l) => new WheelRow(l));
     this.telemetryEl.append(
@@ -1019,7 +1021,7 @@ class RaceView {
         );
       }
       this.updateSectors(tm, snap, behindLine);
-      this.speedText.set(String(Math.round(st.speed * 3.6)));
+      this.speedText.set(String(Math.round(U.speed(st.speed).value)));
       this.gearText.set(st.shiftTimer > 0 ? '·' : gearLabel(st.gear));
       const lim = spec.engine.limiterRpm;
       this.rpmBar.set(st.engineRpm / lim);
@@ -1045,7 +1047,7 @@ class RaceView {
         const hue = Math.round((120 * (1 - t)) / 10) * 10;
         bar.set(frac, `hsl(${hue} 80% 50%)`);
         const eff = brakeEffectiveness(bs, temp);
-        text.set(`${fmtInt(temp)}° ${eff < 0.97 ? `${fmtInt(eff * 100)}%` : ''}`.trim());
+        text.set(`${fmtInt(U.temp(temp).value)}° ${eff < 0.97 ? `${fmtInt(eff * 100)}%` : ''}`.trim());
       };
       setBrake(this.brakeF, this.brakeFText, bf, 'front');
       setBrake(this.brakeR, this.brakeRText, brr, 'rear');
@@ -1056,12 +1058,13 @@ class RaceView {
       // elevation / bank read-out
       const gradePct = Math.tan(st.road.gradeAlong) * 100;
       const bankDeg = (st.road.bankAcross * 180) / Math.PI;
+      const ride = U.small((st.z - st.road.z - spec.cgHeight) * 1000);
       this.elevText.el.replaceChildren(
         ...this.elevParts(
-          `alt ${st.road.z.toFixed(1)} m`,
+          `alt ${fq(U.dist(st.road.z), 1)}`,
           `grade ${gradePct >= 0 ? '+' : ''}${gradePct.toFixed(1)}%`,
           `bank ${bankDeg >= 0 ? '+' : ''}${bankDeg.toFixed(0)}°`,
-          st.airborne ? `AIR ${st.airTime.toFixed(1)} s` : `ride ${Math.round((st.z - st.road.z - spec.cgHeight) * 1000)} mm`,
+          st.airborne ? `AIR ${st.airTime.toFixed(1)} s` : `ride ${ride.unit === 'in' ? ride.value.toFixed(2) : Math.round(ride.value)} ${ride.unit}`,
         ),
       );
 
@@ -1223,16 +1226,16 @@ class RaceView {
       `vy <b>${d(st.vy)}</b> m/s`,
       `pitch <b>${d((st.pitch * 180) / Math.PI, 1)}</b>°`,
       `roll <b>${d((st.roll * 180) / Math.PI, 1)}</b>°`,
-      `z <b>${d(st.z)}</b> m`,
-      `vz <b>${d(st.vz)}</b> m/s`,
+      `z <b>${d(U.dist(st.z).value)}</b> ${U.dist(0).unit}`,
+      `vz <b>${d(U.dist(st.vz).value)}</b> ${U.dist(0).unit}/s`,
       `air <b>${d(st.airTime, 1)}</b> s`,
-      `s <b>${d(st.road.s, 0)}</b> m`,
-      `lat <b>${d(st.road.lateral, 1)}</b> m`,
+      `s <b>${d(U.dist(st.road.s).value, 0)}</b> ${U.dist(0).unit}`,
+      `lat <b>${d(U.dist(st.road.lateral).value, 1)}</b> ${U.dist(0).unit}`,
       `κ <b>${d(st.road.curvature, 3)}</b>`,
       `grip×<b>${d(st.road.surface.grip)}</b>`,
       `shift <b>${d(st.shiftTimer)}</b>`,
       `thr* <b>${d(st.throttleEffective)}</b>`,
-      `odo <b>${d(st.odometer, 0)}</b> m`,
+      `odo <b>${d(U.dist(st.odometer).value, 0)}</b> ${U.dist(0).unit}`,
     ].join(' ');
     // innerHTML only rebuilt when the string changes (values are quantised above)
     if (this.bodyTel.el.dataset.t !== parts) {

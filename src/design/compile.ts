@@ -63,12 +63,18 @@ const TUNES: Record<EngineTune, { peakTorqueRpmFraction: number; peakiness: numb
 const FLYWHEEL_FACTOR = { light: 0.6, standard: 1, heavy: 1.6 } as const;
 
 /**
- * °C per joule for the reference tyre (205 mm, 220 kPa) at heatingScale 1. Calibrated with the AI
- * on clubsprint so a hot lap holds slicks inside their window (the Track Weapon's mediums settle
- * around their 92 °C optimum, sport tyres ~15 °C below their 70 °C optimum, well inside their wide
- * window); with sim/tire.ts saturating the heating slip speed at 3 m/s, a 2 s burnout costs ~20 °C.
+ * °C per joule for the reference tyre (205 mm, 220 kPa) at heatingScale 1 — the inverse of the
+ * tyre's effective thermal mass (0.65e-3 °C/J ≈ 1.5 kJ/°C, about a kilogram of tread rubber: the
+ * single temperature the model tracks is the tread, the carcass is the cooling path). Heating and
+ * cooling (`TIRE_COOLING_BASE`) were both scaled by 0.65 from the first calibration so the hot-lap
+ * EQUILIBRIUM is unchanged (the Track Weapon's mediums still settle around their 92 °C optimum on
+ * clubsprint, sport tyres ~15 °C below their 70 °C optimum) while one hard stop from 200 km/h
+ * raises a warm slick by ~18 °C instead of ~27 °C — the surface spike is real, but a single-mass
+ * tyre must not treat it as the whole tyre — and a 2 s burnout costs ~13 °C.
  */
-export const TIRE_HEATING_BASE = 1.0e-3;
+export const TIRE_HEATING_BASE = 0.65e-3;
+/** Cooling rate (1/s) at rest for the reference tyre at coolingScale 1; ×(1 + v/20) with speed. */
+export const TIRE_COOLING_BASE = 0.013;
 
 const DIFF_MAP: Record<DiffChoice, DiffSpec> = {
   open: { type: 'open', powerLock: 0, coastLock: 0 },
@@ -127,8 +133,9 @@ function buildTireSpec(setup: TireSetup): TireSpec {
     optimalTemp: c.optimalTemp,
     tempWindow: c.tempWindow,
     coldGripFloor: c.coldGripFloor,
+    hotGripFloor: c.hotGripFloor,
     heatingPerJoule: TIRE_HEATING_BASE * c.heatingScale * (205 / w) * Math.pow(pr, 0.35),
-    coolingRate: 0.02 * Math.pow(wr, 0.3) * c.coolingScale,
+    coolingRate: TIRE_COOLING_BASE * Math.pow(wr, 0.3) * c.coolingScale,
     wearPerJoule: c.wearScale * 1e-8 * (205 / w),
     wearGripLoss: c.wearGripLoss,
     rollingResistance: c.rollingResistance * Math.pow(pr, 0.5),

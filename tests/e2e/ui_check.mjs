@@ -248,6 +248,35 @@ async function main() {
     }
     await page.waitForFunction(() => window.__racers.garage.lapEstimate != null, null, { timeout: 15000 });
     await shot(page, '04-garage-tuned.png');
+    // tabs: the tyres tab shows its two charts, the engine slider stays reachable in its (hidden) pane
+    await page.click('.tab[data-tab="tyres"]');
+    await sleep(150);
+    const tyreCharts = await page.$$eval('.charts-wrap canvas.chart', (els) => els.map((e) => e.getAttribute('aria-label')));
+    if (tyreCharts.length !== 2 || !/temperature/i.test(tyreCharts[0])) fail(`garage: tyres tab charts wrong: ${JSON.stringify(tyreCharts)}`);
+    const tyresShown = await page.$eval('.tab-pane[data-tab="tyres"]', (el) => !el.hidden);
+    const engineHidden = await page.$eval('.tab-pane[data-tab="engine"]', (el) => el.hidden);
+    if (!tyresShown || !engineHidden) fail('garage: tab panes not toggled');
+    await shot(page, '04b-garage-tyres-tab.png');
+    await page.click('.tab[data-tab="brakes"]');
+    await sleep(150);
+    await shot(page, '04c-garage-brakes-tab.png');
+    // units: imperial re-mounts the garage with mph / lb, metric restores km/h
+    await page.click('.units-toggle [data-units="imperial"]');
+    await sleep(400);
+    const topImperial = await page.$eval('.garage .metrics', (el) => el.textContent || '');
+    if (!/mph/.test(topImperial) || !/\blb\b/.test(topImperial)) fail(`garage: imperial units not shown (${topImperial.slice(0, 120)})`);
+    const unitLabel = await page.$eval('input[type=range][data-path="tires.front.pressure"]', (el) => el.closest('.field').querySelector('.unit').textContent);
+    if (unitLabel !== 'psi') fail(`garage: pressure field unit should be psi in imperial, got "${unitLabel}"`);
+    await shot(page, '04d-garage-imperial.png');
+    const prefs = await page.evaluate(() => JSON.parse(localStorage.getItem('racers.prefs.v1') || '{}'));
+    if (prefs.units !== 'imperial') fail(`prefs not persisted: ${JSON.stringify(prefs)}`);
+    await page.click('.units-toggle [data-units="metric"]');
+    await sleep(400);
+    const topMetric = await page.$eval('.garage .metrics', (el) => el.textContent || '');
+    if (!/km\/h/.test(topMetric)) fail('garage: metric units not restored');
+    log('garage: tabs + units ok');
+    await page.click('.tab[data-tab="chassis"]');
+    await sleep(100);
     const storedCars = await page.evaluate(() => localStorage.getItem('racers.cars.v1'));
     if (!storedCars || !JSON.parse(storedCars).cars?.length) fail('garage: cars not persisted to racers.cars.v1');
     const playerCarId = await page.evaluate(() => window.__racers.session.selectedCarId);
@@ -292,9 +321,11 @@ async function main() {
     await sleep(600);
     await shot(page, '06b-race-go.png');
 
-    // keyboard: throttle, then steer
+    // keyboard: throttle, then steer. Wait on RACE time, not wall time: under software GL the loop
+    // runs in slow motion and a fixed sleep covers a varying amount of simulation.
+    const tThrottle = (await page.evaluate(HOOK.snapshot)).time;
     await page.keyboard.down('ArrowUp');
-    await sleep(3000);
+    await page.waitForFunction((t0) => window.__racers.race.race.snapshot().time - t0 >= 2.5, tThrottle, { timeout: 60000 * SLOW });
     let p = await page.evaluate(HOOK.player);
     if (!(p.throttle > 0.9)) fail(`race: ArrowUp did not reach the sim (throttle ${p.throttle})`);
     if (!(p.speed > 3)) fail(`race: player did not accelerate with the throttle held (${p.speed.toFixed(2)} m/s)`);

@@ -13,6 +13,7 @@ import { mountRaceSetup } from './raceSetup';
 import { mountRaceView, raceDebug } from './raceView';
 import { ROUTES, type Nav, type Screen } from './screen';
 import { Session } from './state';
+import { detectUnitSystem, onUnitsChange, units, type UnitPreference } from './units';
 
 const app = document.getElementById('app');
 if (!app) throw new Error('#app missing');
@@ -35,7 +36,32 @@ const topbar = h(
   navLinks.map(([href, label], i) => h('a', { class: i === 0 ? 'brand' : 'navlink', href, dataset: { route: href } }, label)),
   h('span', { class: 'spacer' }),
   h('span', { class: 'small muted' }, 'physics-first racing · keyboard only is fine'),
+  h('span', { class: 'sep' }),
+  unitsToggle(),
 );
+
+/** Auto / Metric / Imperial: 'auto' follows the browser locale (US → imperial). Re-mounts the screen on change. */
+function unitsToggle(): HTMLElement {
+  const opts: Array<[UnitPreference, string, string]> = [
+    ['auto', 'Auto', `Follow the browser locale (${detectUnitSystem() === 'imperial' ? 'imperial' : 'metric'} here)`],
+    ['metric', 'Metric', 'km/h · °C · kg · mm · kPa · Nm · kW'],
+    ['imperial', 'Imperial', 'mph · °F · lb · in · psi · lb·ft · hp'],
+  ];
+  const buttons = opts.map(([value, label, title]) =>
+    h('button', { class: 'seg seg-small', type: 'button', title, dataset: { units: value }, onclick: () => session.setUnits(value) }, label),
+  );
+  const wrap = h('div', { class: 'segmented units-toggle', role: 'group', 'aria-label': 'Display units' }, buttons);
+  const refresh = (): void => {
+    for (const b of buttons) b.classList.toggle('active', b.dataset.units === session.units);
+    wrap.title = `Showing ${units()} units`;
+  };
+  refresh();
+  onUnitsChange(() => {
+    refresh();
+    route(); // screens read the unit system when they render
+  });
+  return wrap;
+}
 const screenHost = h('main', { class: 'screen-host' });
 app.append(topbar, screenHost);
 

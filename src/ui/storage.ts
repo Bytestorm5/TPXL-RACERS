@@ -10,6 +10,7 @@
  *   racers.cars.v1   { format: 1, cars: CarBuild[], selectedId?: string }
  *   racers.setup.v1  { format: 1, trackId, laps, playerCarId, opponents: string[], aiSkill, preheatTyres? }
  *   racers.best.v1   { format: 1, best: Record<`${trackId}|${carId}`, number> }
+ *   racers.prefs.v1  { format: 1, units?: 'auto' | 'metric' | 'imperial' }
  */
 import type { CarBuild } from '../design/types';
 import { desktop, type DesktopStorage } from './desktop';
@@ -18,6 +19,7 @@ export const KEYS = {
   cars: 'racers.cars.v1',
   setup: 'racers.setup.v1',
   best: 'racers.best.v1',
+  prefs: 'racers.prefs.v1',
 } as const;
 
 export type StorageBackend = DesktopStorage;
@@ -139,4 +141,14 @@ export interface BestFile {
 export function isBestFile(v: unknown): v is BestFile {
   if (!isObj(v) || v.format !== 1 || !isObj(v.best)) return false;
   return Object.values(v.best).every((t) => typeof t === 'number' && Number.isFinite(t) && t > 0);
+}
+
+export interface PrefsFile {
+  format: 1;
+  /** Display units; 'auto' = from the browser locale. */
+  units?: 'auto' | 'metric' | 'imperial';
+}
+
+export function isPrefsFile(v: unknown): v is PrefsFile {
+  return isObj(v) && v.format === 1 && (v.units === undefined || v.units === 'auto' || v.units === 'metric' || v.units === 'imperial');
 }

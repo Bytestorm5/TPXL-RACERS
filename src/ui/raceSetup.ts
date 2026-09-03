@@ -9,6 +9,7 @@ import { fmtLap } from './format';
 import { ROUTES, type Nav, type Screen } from './screen';
 import { MAX_OPPONENTS, type Session } from './state';
 import { drawMinimap, SURFACE_LABEL, trackSurfaces } from './trackRender';
+import { fq, U } from './units';
 
 export function mountRaceSetup(root: HTMLElement, session: Session, nav: Nav): Screen {
   const setup = session.setup;
@@ -51,7 +52,7 @@ export function mountRaceSetup(root: HTMLElement, session: Session, nav: Nav): S
         },
         canvas,
         h('div', { class: 'track-name' }, spec.name, h('span', { class: 'tag' }, spec.closed ? 'circuit' : 'stage'), user ? h('span', { class: 'tag accent' }, 'mod') : null),
-        h('div', { class: 'small mono muted' }, `${(track.length / 1000).toFixed(2)} km · ${spec.ambientTemp ?? 22} °C${user && spec.author ? ` · by ${spec.author}` : ''}`),
+        h('div', { class: 'small mono muted' }, `${fq(U.distLong(track.length), 2)} · ${fq(U.temp(spec.ambientTemp ?? 22))}${user && spec.author ? ` · by ${spec.author}` : ''}`),
         h('div', { class: 'surface-tags' }, trackSurfaces(track).map((s) => h('span', { class: `stag stag-${s}` }, SURFACE_LABEL[s]))),
         h('p', { class: 'track-desc' }, spec.description ?? ''),
         best,

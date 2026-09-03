@@ -144,18 +144,49 @@ export function tireLoadFactor(spec: TireSpec, load: number): number {
   return nonNeg(1 - spec.underloadPenalty * u * u);
 }
 
+/** Default hot-side floor and window multiple (TireSpec.hotGripFloor / hotWindowScale when absent). */
+export const DEFAULT_HOT_GRIP_FLOOR = 0.75;
+export const DEFAULT_HOT_WINDOW_SCALE = 1.6;
+
+/** Hot-side floor: the spec's value (or the default), never below the cold floor. */
+export function tireHotGripFloor(spec: TireSpec): number {
+  const cold = unit(spec.coldGripFloor);
+  const h = spec.hotGripFloor;
+  const hot = typeof h === 'number' && h === h ? unit(h) : DEFAULT_HOT_GRIP_FLOOR;
+  return hot > cold ? hot : cold;
+}
+
+/** Hot-side half-width (°C): tempWindow × hotWindowScale (default 1.6). */
+export function tireHotWindow(spec: TireSpec): number {
+  const k = spec.hotWindowScale;
+  const scale = typeof k === 'number' && k > 0 ? k : DEFAULT_HOT_WINDOW_SCALE;
+  return spec.tempWindow * scale;
+}
+
 /**
- * Temperature factor: floor + (1 − floor)·exp(−ln2·((T − optimalTemp)/tempWindow)²).
- * Equals 1 at optimalTemp and (1 + floor)/2 at optimalTemp ± tempWindow (≈ 0.775 for a 0.55 floor).
- * Non-positive tempWindow disables the effect.
+ * Temperature factor — an ASYMMETRIC window:
+ *   T ≤ optimalTemp (cold, glassy rubber):
+ *     coldFloor + (1 − coldFloor)·exp(−ln2·((T − optimalTemp)/tempWindow)²)
+ *   T > optimalTemp (hot, greasy rubber):
+ *     hotFloor  + (1 − hotFloor) ·exp(−ln2·((T − optimalTemp)/(tempWindow·hotWindowScale))²)
+ * Equals 1 at optimalTemp; half-way to the cold floor at optimalTemp − tempWindow and half-way to
+ * the hot floor at optimalTemp + 1.6·tempWindow. Over-heating costs far less than being cold: a
+ * tyre 40 °C over its optimum keeps ~85–90 % of its grip (greasy), one 40 °C under keeps ~55–75 %.
+ * Both sides are C¹-continuous at the optimum (zero slope). Non-positive tempWindow disables.
  */
 export function tireTempFactor(spec: TireSpec, temp: number): number {
   const w = spec.tempWindow;
   if (!(w > 0)) return 1;
-  const floor = unit(spec.coldGripFloor);
-  const x = (temp - spec.optimalTemp) / w;
-  if (x !== x) return floor;
-  return floor + (1 - floor) * Math.exp(-TEMP_WINDOW_K * x * x);
+  const cold = unit(spec.coldGripFloor);
+  if (temp !== temp) return cold;
+  const d = temp - spec.optimalTemp;
+  if (d <= 0) {
+    const x = d / w;
+    return cold + (1 - cold) * Math.exp(-TEMP_WINDOW_K * x * x);
+  }
+  const hot = tireHotGripFloor(spec);
+  const x = d / tireHotWindow(spec);
+  return hot + (1 - hot) * Math.exp(-TEMP_WINDOW_K * x * x);
 }
 
 /** Wear factor: 1 − wearGripLoss·clamp01(wear). */
@@ -484,6 +515,7 @@ export function exampleTireSpec(overrides: Partial<TireSpec> = {}): TireSpec {
     optimalTemp: 80,
     tempWindow: 35,
     coldGripFloor: 0.55,
+    hotGripFloor: 0.75,
     heatingPerJoule: 7e-4,
     coolingRate: 0.03,
     wearPerJoule: 1e-8,
