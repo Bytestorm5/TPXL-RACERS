@@ -1152,9 +1152,11 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
   /**
    * Traction-control floor: on loose surfaces a spinning tyre keeps most of its grip
    * (`slideRetention`), so cutting to 6 % throttle only strands the car on a gravel climb — a rally
-   * driver keeps the wheels turning. Asphalt 0.06, gravel 0.36, snow 0.41.
+   * driver keeps the wheels turning — an AWD car can (gravel floor 0.36), a FWD car mostly (0.30),
+   * a powerful RWD car must modulate or its sliding rears take the lateral grip with them (0.18).
    */
-  const tcFloor = (state: VehicleState): number => 0.06 + 0.5 * clamp01(state.road.surface.slideRetention);
+  const tcLayoutGain = driveF && driveR ? 0.5 : driveF ? 0.4 : 0.2;
+  const tcFloor = (state: VehicleState): number => 0.06 + tcLayoutGain * clamp01(state.road.surface.slideRetention);
 
   const drive = (state: VehicleState, others: ReadonlyArray<VehicleState>, dt: number): DriverInput => {
     const h = Number.isFinite(dt) && dt > 0 ? dt : 1 / 120;

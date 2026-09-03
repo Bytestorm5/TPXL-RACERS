@@ -174,6 +174,10 @@ export const OFF_WORLD_DISTANCE = 40;
 export const OFF_WORLD_DELAY = 3;
 /** An AI car whose driver reports `stuckFor` beyond this (s) is put back on the road like a wreck. */
 export const STUCK_RESET_DELAY = 10;
+/** Resets on a grade steeper than this (rad, ≈ 5 %) back off up to RESET_BACKOFF_M to the flattest spot (≤ RESET_FLAT_GRADE ends the search). */
+export const RESET_MAX_GRADE = 0.05;
+export const RESET_FLAT_GRADE = 0.03;
+export const RESET_BACKOFF_M = 100;
 /** Pre-heated start (formation-lap simplification): tyres this far below their optimum (°C), brakes at this temperature. */
 export const PREHEAT_TYRE_BELOW_OPTIMAL = 15;
 export const PREHEAT_BRAKE_TEMP = 120;
@@ -460,6 +464,7 @@ class RaceImpl implements Race {
       const c = track.centreAt(proj.s);
       if (Number.isFinite(proj.s) && proj.distance <= c.width / 2 + RESET_MAX_OFF_TRACK) s = proj.s;
     }
+    s = this.gentlerResetPoint(s);
     const pose = track.poseAt(s, 0);
     resetVehicleState(car.entry.spec, st, { x: pose.x, y: pose.y, heading: pose.heading }, track);
     // A reset is a "pushed back onto the road" moment: with pre-heated starts the tyres come back at
@@ -492,6 +497,32 @@ class RaceImpl implements Race {
   }
 
   // ------------------------------------------------------------ internals
+
+  /**
+   * A car re-posed at rest on a steep grade (a jump ramp, a gravel climb) may not be able to move off
+   * again — a slick-shod car on a 16 % gravel ramp rolls back, the stuck watchdog fires and the next
+   * reset lands on the same ramp forever. Back off (never forward) to the flattest point within
+   * RESET_BACKOFF_M when the grade at `s` exceeds RESET_MAX_GRADE.
+   */
+  private gentlerResetPoint(s: number): number {
+    const track = this.track;
+    const gradeAt = (q: number): number => Math.abs(track.centreAt(q).grade);
+    if (!(gradeAt(s) > RESET_MAX_GRADE)) return s;
+    let best = s;
+    let bestGrade = gradeAt(s);
+    for (let d = 5; d <= RESET_BACKOFF_M; d += 5) {
+      let q = s - d;
+      if (this.closed) q = ((q % this.length) + this.length) % this.length;
+      else if (q < 0) break;
+      const g = gradeAt(q);
+      if (g < bestGrade - 1e-6) {
+        best = q;
+        bestGrade = g;
+      }
+      if (bestGrade <= RESET_FLAT_GRADE) break;
+    }
+    return best;
+  }
 
   private goGreen(): void {
     this.started = true;

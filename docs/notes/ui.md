@@ -177,17 +177,22 @@ last 300 frames; the rAF loop is pinned at 60 Hz so the frame interval is 16.7 m
 
 | Race | fps | frame avg / p95 / max | `race.step` avg / p95 / max | render avg / p95 / max |
 | --- | --- | --- | --- | --- |
-| Clubsprint, 6 cars, autopilot + 5 AI | 60 | 16.7 / 16.8 / 16.8 ms | 0.68 / 1.00 / — ms | 3.34 / 4.50 / — ms |
-| Clubsprint, 8 cars (7 AI) | 60 | 16.7 / 16.8 / 16.8 ms | 0.74 / 0.90 / 1.50 ms | 3.12 / 3.80 / 7.20 ms |
+| Clubsprint, 6 cars, autopilot + 5 AI (8 s sample) | 60 | 16.7 / 16.8 / 16.8 ms | 0.71 / 1.20 / — ms | 3.03 / 3.90 / — ms |
+| Clubsprint, 6 cars, `--realtime`, last 300 frames of a 3-min race | 60 | — / 16.7 / 16.8 ms | — / 0.90 / — ms | — / 3.90 / — ms |
+| Clubsprint, 8 cars (7 AI) | 60 | 16.7 / 16.7 / 16.8 ms | 0.77 / 1.20 / 1.40 ms | 3.08 / 3.90 / 7.00 ms |
 
-Per-frame work with 8 cars is ~4 ms against the 20 ms budget, so nothing had to be trimmed. The whole
-e2e (two laps of the 6-car race through `advance`, the 8-car probe, two laps on Dunes) runs in ~70 s
-wall; `--realtime` sits through the Clubsprint race at 1× (~4 min).
+Per-frame work with 8 cars is ~4 ms against the 20 ms budget, so nothing had to be trimmed (the one
+33 ms frame seen in an 8-car sample was a GC pause: `race.step` max 9.5 ms once in 300 frames of one
+run). The whole e2e (two laps of the 6-car race through `advance`, the 8-car probe, two laps on Dunes)
+runs in ~75 s wall; `--realtime` sits through the Clubsprint race at 1× (~4 min, 183 s of racing).
 
-Race facts from the run: the autopiloted Roadster S (skill 0.85) finished 2 laps of Clubsprint at
-2:54.8 with a best of 1:16.3, the record was persisted, every car finished by 220 s; on Dunes all four
-cars (Gravel Rally, Club Hatch, Kei Racer, Muscle) completed 2 laps with zero resets, the Gravel Rally
-flew the tabletop (`seen.maxAirTime` 1.12 s, max |roll| 9°), nobody wrecked.
+Race facts from the final runs (player from the back of the grid): all six cars finish 2 laps of
+Clubsprint by 199–210 s; the autopiloted Roadster S (skill 0.85, un-tuned default until Auto-tune,
+with one deliberate R reset early on) ends 6th with a best of 1:25–1:39 while the AI field's best laps
+are 1:17 (Track Weapon) to 1:39; the record is persisted; standings order obeyed race.ts at every 10 s
+sample; the HUD never showed NaN. On Dunes (Gravel Rally + Club Hatch, Kei Racer, Muscle) all four cars
+complete 2 laps with zero resets in 253 s, the Gravel Rally's best is 85.7 s (the solo AI test does
+85.0), it flies the tabletop with `seen.maxAirTime` 1.11 s and max |roll| 9°, nobody wrecks.
 
 ## Sim observations for the other agent
 

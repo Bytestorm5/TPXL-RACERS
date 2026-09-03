@@ -175,7 +175,8 @@ async function main() {
     await run('npx', ['vite', 'build']);
   }
   log(`starting preview on :${PORT}`);
-  const server = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { cwd: root, stdio: 'ignore', shell: process.platform === 'win32' });
+  // detached → its own process group, so the real vite process (a child of the npx wrapper) can be killed too
+  const server = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { cwd: root, stdio: 'ignore', shell: process.platform === 'win32', detached: process.platform !== 'win32' });
   const base = `http://localhost:${PORT}/`;
   let browser;
   const problems = [];
@@ -539,7 +540,12 @@ async function main() {
     log(`PASS in ${((Date.now() - t0) / 1000).toFixed(0)} s — screenshots in ${path.relative(root, SHOTS)}/`);
   } finally {
     if (browser) await browser.close();
-    server.kill();
+    try {
+      if (process.platform !== 'win32') process.kill(-server.pid, 'SIGTERM');
+      else server.kill();
+    } catch {
+      server.kill();
+    }
   }
 }
 

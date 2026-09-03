@@ -289,7 +289,7 @@ describe('presetBuilds', () => {
     expect(kei.chassis.size).toBe('kei');
     expect(kei.engine.displacement).toBeCloseTo(0.66, 9);
     expect(kei.engine.cylinders).toBe(3);
-    expect(kei.engine.boost).toBeCloseTo(1.0, 9);
+    expect(kei.engine.boost).toBeCloseTo(0.6, 9); // a tuned kei: ~75 kW (real kei cars are capped at 47 kW), not 90+
     expect(kei.tires.front.width).toBeCloseTo(165, 9);
 
     const ice = byName.get('Ice Runner')!;
