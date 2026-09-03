@@ -64,6 +64,10 @@ const ABS_SLIP_FRACTION = 0.9;
 const SETTLE_SUBSTEPS = 240;
 /** Reported engine rpm saturates at limiter × this (the fuel cut). */
 const RPM_REPORT_OVERSHOOT = 1.03;
+/** Auto-gearbox hysteresis (s): downshift block after an upshift (longer after a wheelspin-induced one), upshift block after a downshift. */
+const SHIFT_HOLD_DOWN = 1.5;
+const SHIFT_HOLD_DOWN_SPIN = 3;
+const SHIFT_HOLD_UP = 0.5;
 /** Hull corners closer than this (m) to the local road plane are sampled for penetration. */
 const HULL_CHECK_CLEARANCE = 0.08;
 /** Beyond halfWidth + this (m) from the centreline the wheels reuse the CG road sample (plane). */
@@ -149,11 +153,23 @@ interface WheelScratch {
 
 interface Internal {
   vzBody: number;
+  /** Attitude quaternion body→world (w, x, y, z); the state's Euler angles are derived from it. */
+  qw: number;
+  qx: number;
+  qy: number;
+  qz: number;
+  /** Euler angles last written to the state (an external edit → rebuild the quaternion). */
+  eYaw: number;
+  ePitch: number;
+  eRoll: number;
   wheels: [WheelScratch, WheelScratch, WheelScratch, WheelScratch];
   rateValid: boolean;
   tiltTime: number;
   prevShiftUp: boolean;
   prevShiftDown: boolean;
+  /** TCU hysteresis: seconds during which auto downshifts / (non-limiter) upshifts are blocked. */
+  holdDown: number;
+  holdUp: number;
   aero: AeroForces;
   tireIn: TireInput;
   /** Hull corners touched the ground this step (telemetry / debugging). */
@@ -220,11 +236,20 @@ function makeInternal(spec: VehicleSpec): Internal {
   const surface: SurfaceProps = { kind: 'asphalt', grip: 1, rollingResistance: 0, roughness: 0, drag: 0, peakSlipScale: 1, slideRetention: 0 };
   return {
     vzBody: 0,
+    qw: 1,
+    qx: 0,
+    qy: 0,
+    qz: 0,
+    eYaw: NaN,
+    ePitch: NaN,
+    eRoll: NaN,
     wheels: [makeWheelScratch(c[0][0], c[0][1]), makeWheelScratch(c[1][0], c[1][1]), makeWheelScratch(c[2][0], c[2][1]), makeWheelScratch(c[3][0], c[3][1])],
     rateValid: false,
     tiltTime: 0,
     prevShiftUp: false,
     prevShiftDown: false,
+    holdDown: 0,
+    holdUp: 0,
     aero: { drag: 0, downFront: 0, downRear: 0 },
     tireIn: { load: 0, slipAngle: 0, slipRatio: 0, camber: 0, surface, temp: 20, wear: 0, speed: V_EPS },
     hullContacts: 0,
@@ -491,7 +516,7 @@ export function resetVehicleState(spec: VehicleSpec, state: VehicleState, pose: 
 export function stepVehicle(spec: VehicleSpec, state: VehicleState, input: DriverInput, road: RoadQuery, dt: number): VehicleState {
   if (!(dt > 0) || !Number.isFinite(dt)) return state;
   const it = internalOf(spec, state);
-  const inp = sanitiseInput(input);
+  const inp = sanitiseInput(input, state.input === input ? undefined : state.input);
   state.input = inp;
 
   // --- gear logic (once per step) -------------------------------------------------------
@@ -522,11 +547,19 @@ export function stepVehicle(spec: VehicleSpec, state: VehicleState, input: Drive
     if (split < 1 - 1e-6) omegaDriven += (1 - split) * 0.5 * (state.wheels[2].omega + state.wheels[3].omega);
     const shiftRpm = Math.max(spec.engine.idleRpm, rpmFromWheelSpeed(spec.drivetrain, state.gear, omegaDriven));
     const g = autoShiftGear(spec.drivetrain, spec.engine, state.gear, shiftRpm, state.throttleEffective);
-    if (g !== state.gear) {
+    // TCU hysteresis: a wheelspin-induced upshift must not be undone the moment the wheels grip again.
+    const atLimiter = shiftRpm >= 0.985 * spec.engine.limiterRpm;
+    const allowed = g > state.gear ? it.holdUp <= 0 || atLimiter : it.holdDown <= 0;
+    if (g !== state.gear && allowed) {
+      const spinning = state.wheels.some((w) => w.spinning);
+      if (g > state.gear) it.holdDown = spinning ? SHIFT_HOLD_DOWN_SPIN : SHIFT_HOLD_DOWN;
+      else it.holdUp = SHIFT_HOLD_UP;
       state.gear = g;
       state.shiftTimer = spec.drivetrain.shiftTime;
     }
   }
+  it.holdDown = Math.max(0, it.holdDown - dt);
+  it.holdUp = Math.max(0, it.holdUp - dt);
 
   // --- substeps ------------------------------------------------------------------------
   const steps = Math.max(1, Math.ceil(dt / MAX_SUBSTEP - 1e-9));
@@ -535,16 +568,17 @@ export function stepVehicle(spec: VehicleSpec, state: VehicleState, input: Drive
   return state;
 }
 
-function sanitiseInput(input: DriverInput): DriverInput {
+/** Clamp / NaN-proof the driver input, writing into `into` (the state's echo object) when given. */
+function sanitiseInput(input: DriverInput, into?: DriverInput): DriverInput {
   const f = (v: number, lo: number, hi: number): number => (Number.isFinite(v) ? clamp(v, lo, hi) : 0);
-  return {
-    throttle: f(input.throttle, 0, 1),
-    brake: f(input.brake, 0, 1),
-    steer: f(input.steer, -1, 1),
-    handbrake: f(input.handbrake, 0, 1),
-    shiftUp: !!input.shiftUp,
-    shiftDown: !!input.shiftDown,
-  };
+  const out: DriverInput = into ?? { throttle: 0, brake: 0, steer: 0, handbrake: 0, shiftUp: false, shiftDown: false };
+  out.throttle = f(input.throttle, 0, 1);
+  out.brake = f(input.brake, 0, 1);
+  out.steer = f(input.steer, -1, 1);
+  out.handbrake = f(input.handbrake, 0, 1);
+  out.shiftUp = !!input.shiftUp;
+  out.shiftDown = !!input.shiftDown;
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -562,6 +596,26 @@ function dirSign(vwx: number, omega: number, tDrive: number): number {
 
 function sgn(v: number): number {
   return v > 0 ? 1 : v < 0 ? -1 : 0;
+}
+
+/** Quaternion (body→world) from the ZYX Euler angles used by the state: R = Rz(yaw)·Ry(pitch)·Rx(roll). */
+function quatFromEuler(it: Internal, yaw: number, pitch: number, roll: number): void {
+  const y = Number.isFinite(yaw) ? yaw : 0;
+  const p = Number.isFinite(pitch) ? pitch : 0;
+  const r = Number.isFinite(roll) ? roll : 0;
+  const cy = Math.cos(y / 2);
+  const sy = Math.sin(y / 2);
+  const cp = Math.cos(p / 2);
+  const sp = Math.sin(p / 2);
+  const cr = Math.cos(r / 2);
+  const sr = Math.sin(r / 2);
+  it.qw = cr * cp * cy + sr * sp * sy;
+  it.qx = sr * cp * cy - cr * sp * sy;
+  it.qy = cr * sp * cy + sr * cp * sy;
+  it.qz = cr * cp * sy - sr * sp * cy;
+  it.eYaw = yaw;
+  it.ePitch = pitch;
+  it.eRoll = roll;
 }
 
 /** Evaluate the tyre model for wheel `w` at its current slips; writes `w.out`. */
@@ -679,21 +733,26 @@ function substep(spec: VehicleSpec, state: VehicleState, it: Internal, input: Dr
   wheels[3].steer = 0;
 
   // --- 2. geometry: rotation, corners, ground, strut compression -------------------------
+  // Attitude lives in a quaternion (no gimbal lock while tumbling); the state's Euler angles are
+  // derived from it, and an externally edited angle (teleport, reset, clone) rebuilds it.
+  if (state.heading !== it.eYaw || state.pitch !== it.ePitch || state.roll !== it.eRoll || !Number.isFinite(it.qw + it.qx + it.qy + it.qz)) {
+    quatFromEuler(it, state.heading, state.pitch, state.roll);
+  }
+  const qw = it.qw;
+  const qx = it.qx;
+  const qy = it.qy;
+  const qz = it.qz;
+  const R00 = 1 - 2 * (qy * qy + qz * qz);
+  const R01 = 2 * (qx * qy - qz * qw);
+  const R02 = 2 * (qx * qz + qy * qw);
+  const R10 = 2 * (qx * qy + qz * qw);
+  const R11 = 1 - 2 * (qx * qx + qz * qz);
+  const R12 = 2 * (qy * qz - qx * qw);
+  const R20 = 2 * (qx * qz - qy * qw);
+  const R21 = 2 * (qy * qz + qx * qw);
+  const R22 = 1 - 2 * (qx * qx + qy * qy);
   const cy = Math.cos(state.heading);
   const sy = Math.sin(state.heading);
-  const cp = Math.cos(state.pitch);
-  const sp = Math.sin(state.pitch);
-  const cr = Math.cos(state.roll);
-  const sr = Math.sin(state.roll);
-  const R00 = cy * cp;
-  const R01 = cy * sp * sr - sy * cr;
-  const R02 = cy * sp * cr + sy * sr;
-  const R10 = sy * cp;
-  const R11 = sy * sp * sr + cy * cr;
-  const R12 = sy * sp * cr - cy * sr;
-  const R20 = -sp;
-  const R21 = cp * sr;
-  const R22 = cp * cr;
   const tilted = R22 <= TIP_COS;
 
   const cgSample = road.sampleAt(state.x, state.y, state.heading);
@@ -831,9 +890,10 @@ function substep(spec: VehicleSpec, state: VehicleState, it: Internal, input: Dr
   const ratio = overallRatio(dtr, gear);
   let rpm = Number.isFinite(state.engineRpm) ? state.engineRpm : eng.idleRpm;
   let tTotal = 0;
+  let clutchSlip = true; // engine decoupled (neutral / shifting / slipping launch clutch)
   if (gear !== 0 && ratio !== 0 && state.shiftTimer <= 0) {
     const wheelRpm = rpmFromWheelSpeed(dtr, gear, omegaDriven);
-    let clutchSlip = false;
+    clutchSlip = false;
     if (Math.abs(vx0) < 4 && thr > 0.05) {
       // Launch clutch (documented simplification): the engine is held at a throttle-dependent rpm
       // and its torque at that rpm is delivered through the slipping clutch.
@@ -862,6 +922,12 @@ function substep(spec: VehicleSpec, state: VehicleState, it: Internal, input: Dr
   state.engineRpm = rpm;
   if (state.shiftTimer > 0) state.shiftTimer = Math.max(0, state.shiftTimer - dt);
   const omegaCap = gear !== 0 && ratio !== 0 ? Math.abs(wheelOmegaFromRpm(dtr, gear, eng.limiterRpm)) : Infinity;
+  // Rotational inertia a driven wheel sees beyond its own: the drivetrain share plus, with the clutch
+  // engaged, the engine's inertia reflected through the gearbox (ratio²) — this is what makes a burnout
+  // rev up over ~1 s and spin down gradually instead of snapping.
+  const engineReflected = clutchSlip ? 0 : Math.max(eng.inertia, 0) * ratio * ratio;
+  const iDriveExtra = nDriven > 0 ? (Math.max(dtr.inertia, 0) + engineReflected) / nDriven : 0;
+  const iReactExtra = nDriven > 0 ? Math.max(dtr.inertia, 0) / nDriven : 0;
 
   const axleLock = [false, false];
   for (let axle = 0; axle < 2; axle++) {
@@ -904,7 +970,9 @@ function substep(spec: VehicleSpec, state: VehicleState, it: Internal, input: Dr
     const tire = front ? spec.tires.front : spec.tires.rear;
     const rad = tire.radius > 0.05 ? tire.radius : 0.3;
     const driven = front ? driveF : driveR;
-    const I = Math.max((front ? br.wheelInertiaFront : br.wheelInertiaRear) + (driven ? dtr.inertia / nDriven : 0), 0.05);
+    const iWheel = front ? br.wheelInertiaFront : br.wheelInertiaRear;
+    const I = Math.max(iWheel + (driven ? iDriveExtra : 0), 0.05);
+    const iReact = Math.max(iWheel + (driven ? iReactExtra : 0), 0.05); // engine spin axis is not the wheel axis
     let omega = Number.isFinite(ws[i].omega) ? ws[i].omega : 0;
 
     if (!w.onGround) {
@@ -914,7 +982,7 @@ function substep(spec: VehicleSpec, state: VehicleState, it: Internal, input: Dr
       if (omega !== 0 && sgn(om2) !== sgn(omega) && w.tBrake > Math.abs(w.tDrive)) om2 = 0;
       if (driven && w.tDrive > 0 && om2 > omegaCap) om2 = omegaCap;
       if (driven && w.tDrive < 0 && om2 < -omegaCap) om2 = -omegaCap;
-      w.reaction = (I * (om2 - omega)) / dt;
+      w.reaction = (iReact * (om2 - omega)) / dt;
       w.kappa = 0;
       w.alpha = 0;
       zeroOut(w.out);
@@ -969,7 +1037,7 @@ function substep(spec: VehicleSpec, state: VehicleState, it: Internal, input: Dr
       let om2 = omega + ((w.tDrive - w.out.fx * rad - tb) / I) * dt;
       if (driven && w.tDrive > 0 && om2 > omegaCap) om2 = omegaCap;
       if (driven && w.tDrive < 0 && om2 < -omegaCap) om2 = -omegaCap;
-      w.reaction = (I * (om2 - omega)) / dt;
+      w.reaction = (iReact * (om2 - omega)) / dt;
       w.spinning = Math.abs(w.kappa) > 1.5 * w.peakKappa;
       w.tBrakeApplied = w.tBrake;
       w.brakePower = w.tBrake * Math.abs(omega);
@@ -995,7 +1063,9 @@ function substep(spec: VehicleSpec, state: VehicleState, it: Internal, input: Dr
     const front = iL < 2;
     const tire = front ? spec.tires.front : spec.tires.rear;
     const rad = tire.radius > 0.05 ? tire.radius : 0.3;
-    const I = Math.max((front ? br.wheelInertiaFront : br.wheelInertiaRear) + dtr.inertia / nDriven, 0.05);
+    const iWheel = front ? br.wheelInertiaFront : br.wheelInertiaRear;
+    const I = Math.max(iWheel + iDriveExtra, 0.05);
+    const iReact = Math.max(iWheel + iReactExtra, 0.05);
     let om = 0.5 * (ws[iL].omega + ws[iR].omega);
     if (!Number.isFinite(om)) om = 0;
     const T = L.tDrive + Rw.tDrive;
@@ -1026,7 +1096,7 @@ function substep(spec: VehicleSpec, state: VehicleState, it: Internal, input: Dr
       let om2 = om + ((T - fxSum * rad - tbSum * sgn(om)) / (2 * I)) * dt;
       if (T > 0 && om2 > omegaCap) om2 = omegaCap;
       if (T < 0 && om2 < -omegaCap) om2 = -omegaCap;
-      const reaction = (I * (om2 - om)) / dt;
+      const reaction = (iReact * (om2 - om)) / dt;
       L.reaction = reaction;
       Rw.reaction = reaction;
       L.brakePower = L.tBrake * Math.abs(om2);
@@ -1070,10 +1140,10 @@ function substep(spec: VehicleSpec, state: VehicleState, it: Internal, input: Dr
 
   // --- 8. forces & moments on the body (body frame) -------------------------------------------
   const acc: Accum = { fx: 0, fy: 0, fz: 0, mx: 0, my: 0, mz: 0 };
-  // gravity
-  const gbx = G * sp;
-  const gby = -G * cp * sr;
-  const gbz = -G * cp * cr;
+  // gravity: R^T (0, 0, −g) = (+g sin θ, −g sin φ cos θ, −g cos φ cos θ)
+  const gbx = -G * R20;
+  const gby = -G * R21;
+  const gbz = -G * R22;
   acc.fx += m * gbx;
   acc.fy += m * gby;
   acc.fz += m * gbz;
@@ -1165,6 +1235,7 @@ function substep(spec: VehicleSpec, state: VehicleState, it: Internal, input: Dr
 
   // hull contact (box corners; plus the wheels as shell points once tipped past 55°)
   it.hullContacts = 0;
+  let deepestPen = 0;
   {
     const rideMin = Math.max(Math.min(sus.rideHeightFront, sus.rideHeightRear), 0);
     const zBot = -(h - rideMin);
@@ -1183,6 +1254,7 @@ function substep(spec: VehicleSpec, state: VehicleState, it: Internal, input: Dr
       const smp = road.sampleAt(Px, Py, state.heading);
       const pen = smp.z - Pz;
       if (!(pen > 0)) return;
+      if (pen > deepestPen) deepestPen = pen;
       // corner velocity in the world frame
       const vbx = vx0 + q0 * bz - r0 * by;
       const vby = vy0 + r0 * bx - p0 * bz;
@@ -1254,24 +1326,35 @@ function substep(spec: VehicleSpec, state: VehicleState, it: Internal, input: Dr
     }
   }
 
-  // attitude (Euler-angle kinematics with the new rates), |pitch| < 85°
-  const tanTh = Math.tan(state.pitch);
-  const dphi = p + (q * sr + r * cr) * tanTh;
-  const dth = q * cr - r * sr;
-  const dpsi = settling ? 0 : (q * sr + r * cr) / (cp > 0.05 ? cp : 0.05);
-  let roll = state.roll + dphi * dt;
-  let pitch = state.pitch + dth * dt;
-  let yaw = state.heading + dpsi * dt;
-  const PITCH_MAX = (85 * Math.PI) / 180;
-  if (pitch > PITCH_MAX) {
-    pitch = PITCH_MAX;
-    if (q > 0) q = 0;
-  } else if (pitch < -PITCH_MAX) {
-    pitch = -PITCH_MAX;
-    if (q < 0) q = 0;
+  // attitude: quaternion kinematics q' = ½ q ⊗ (0, p, q, r) with the new rates, renormalised
+  const pw = settling ? 0 : p;
+  const pq = q;
+  const pr = settling ? 0 : r; // settling holds the heading
+  let nw = qw + 0.5 * (-qx * pw - qy * pq - qz * pr) * dt;
+  let nx = qx + 0.5 * (qw * pw + qy * pr - qz * pq) * dt;
+  let ny = qy + 0.5 * (qw * pq - qx * pr + qz * pw) * dt;
+  let nz = qz + 0.5 * (qw * pr + qx * pq - qy * pw) * dt;
+  const qn = Math.hypot(nw, nx, ny, nz);
+  if (qn > 1e-9 && Number.isFinite(qn)) {
+    nw /= qn;
+    nx /= qn;
+    ny /= qn;
+    nz /= qn;
+  } else {
+    nw = 1;
+    nx = 0;
+    ny = 0;
+    nz = 0;
   }
-  roll = wrapAngle(roll);
-  yaw = wrapAngle(yaw);
+  // Euler angles from the new quaternion (ZYX): pitch = −asin(R20), roll = atan2(R21, R22), yaw = atan2(R10, R00)
+  const nR20 = 2 * (nx * nz - ny * nw);
+  const nR21 = 2 * (ny * nz + nx * nw);
+  const nR22 = 1 - 2 * (nx * nx + ny * ny);
+  const nR10 = 2 * (nx * ny + nz * nw);
+  const nR00 = 1 - 2 * (ny * ny + nz * nz);
+  let pitch = -Math.asin(clamp(nR20, -1, 1));
+  let roll = Math.atan2(nR21, nR22);
+  let yaw = Math.atan2(nR10, nR00);
 
   // position (world velocity of the CG through the current rotation)
   const wvx = R00 * vx + R01 * vy + R02 * vz;
@@ -1280,6 +1363,15 @@ function substep(spec: VehicleSpec, state: VehicleState, it: Internal, input: Dr
   let x = x0 + wvx * dt;
   let y = y0 + wvy * dt;
   let z = z0 + wvz * dt;
+
+  // Teleported deep into the ground (a hostile edit, not physics): correct the position instead of
+  // letting the penalty spring launch the car into orbit.
+  if (deepestPen > 0.5) {
+    z += deepestPen - 0.25;
+    vz = 0;
+    vx *= 0.5;
+    vy *= 0.5;
+  }
 
   // NaN guard: never let a bad step poison the state (positions keep their last good value).
   if (!Number.isFinite(x + y + z + vx + vy + vz + p + q + r + roll + pitch + yaw)) {
@@ -1295,6 +1387,15 @@ function substep(spec: VehicleSpec, state: VehicleState, it: Internal, input: Dr
     roll = Number.isFinite(state.roll) ? state.roll : 0;
     pitch = Number.isFinite(state.pitch) ? state.pitch : 0;
     yaw = Number.isFinite(state.heading) ? state.heading : 0;
+    quatFromEuler(it, yaw, pitch, roll);
+  } else {
+    it.qw = nw;
+    it.qx = nx;
+    it.qy = ny;
+    it.qz = nz;
+    it.eYaw = yaw;
+    it.ePitch = pitch;
+    it.eRoll = roll;
   }
 
   state.x = x;

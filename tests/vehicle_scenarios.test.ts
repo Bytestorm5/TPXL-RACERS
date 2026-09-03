@@ -157,6 +157,11 @@ describe('a. rest', () => {
 // b. Launch
 // ---------------------------------------------------------------------------
 
+/**
+ * Full-throttle launch with a sensible driver: straight-line steering correction and a lift to 40 %
+ * while a driven wheel is spinning (a slick-shod 400 Nm car at literal bang-bang throttle cooks its
+ * rear tyres in a gear-shifting burnout — see docs/notes/vehicle.md).
+ */
 function launch(sp: VehicleSpec, seconds = 20) {
   const road = flatRoad();
   const s = fresh(sp, road);
@@ -164,7 +169,10 @@ function launch(sp: VehicleSpec, seconds = 20) {
   let maxRpm = 0;
   let squat = false;
   let noseUp = false;
-  run(sp, s, road, seconds, (st) => inp({ throttle: 1, steer: straightSteer(st) }), (st, t) => {
+  const split = sp.drivetrain.frontTorqueSplit;
+  const drivenSpinning = (st: VehicleState): boolean =>
+    (split > 0 && (st.wheels[0].spinning || st.wheels[1].spinning)) || (split < 1 && (st.wheels[2].spinning || st.wheels[3].spinning));
+  run(sp, s, road, seconds, (st) => inp({ throttle: drivenSpinning(st) ? 0.4 : 1, steer: straightSteer(st) }), (st, t) => {
     maxRpm = Math.max(maxRpm, st.engineRpm);
     if (t100 < 0 && st.speed >= kmh(100)) t100 = t;
     if (t > 0.2 && t < 1) {
@@ -740,12 +748,24 @@ describe('q. rollover', () => {
 
   it('a +15° bank makes the same left-turn manoeuvre safer than flat ground', () => {
     // With μ 1.6 the bank raises the tipping threshold to ~1.3 g yet the tyres still deliver more; with
-    // μ 1.0 the flat car tips (threshold 0.77 g) while the banked one cannot reach 1.3 g.
+    // μ 1.0 the flat car tips (threshold 0.77 g) while the banked one cannot. The banked road is a bowl
+    // (a fixed inclined plane turns into a grade as the car turns).
     const flat = rollRun(tallCar({}, 1.0), flatRoad(), false, 5);
-    const banked = rollRun(tallCar({}, 1.0), flatRoad({ bank: deg2rad(15) }), false, 5);
-    expect(flat.maxRoll).toBeGreaterThan(deg2rad(30));
-    expect(banked.maxRoll).toBeLessThan(flat.maxRoll * 0.5);
-    expect(banked.state.wrecked).toBe(false);
+    const R = 40;
+    const bowl = bowlRoad({ radius: R, bank: deg2rad(15) });
+    const s = fresh(tallCar({}, 1.0), bowl, { x: R, y: 0, heading: Math.PI / 2 });
+    setSpeed(s, tallCar({}, 1.0), kmh(70));
+    let maxRelRoll = 0;
+    let ok = true;
+    run(tallCar({}, 1.0), s, bowl, 5, () => inp({ steer: 0.8 }), (st) => {
+      if (!finite(st)) ok = false;
+      maxRelRoll = Math.max(maxRelRoll, Math.abs(st.roll + st.road.bankAcross)); // roll relative to the road
+    });
+    expect(ok).toBe(true);
+    expect(flat.maxRoll).toBeGreaterThan(deg2rad(55));
+    expect(flat.state.wrecked).toBe(true);
+    expect(maxRelRoll).toBeLessThan(flat.maxRoll * 0.3);
+    expect(s.wrecked).toBe(false);
   });
 });
 

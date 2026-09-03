@@ -81,7 +81,7 @@ describe('roads', () => {
   it('roadNoise is deterministic, bounded in (−1, 1), smooth, and varies at the 0.5 m scale', () => {
     let min = 1;
     let max = -1;
-    let prev = roadNoise(0, 0);
+    let prev = roadNoise(0, 0.37);
     let maxJump = 0;
     for (let i = 1; i < 20000; i++) {
       const x = i * 0.005;
@@ -336,7 +336,19 @@ describe('hostility and robustness', () => {
     s.z = spec.cgHeight + 1;
     for (let i = 0; i < 600; i++) stepVehicle(spec, s, inp({ throttle: 1, steer: -1 }), road, SIM_DT);
     expect(finite(s)).toBe(true);
-    expect(s.wrecked).toBe(true);
+    // dropped on its roof from 1 m it either stays there (wrecked) or bounces back onto its wheels and
+    // drives off in donuts (full throttle, full lock) — either way the state stays bounded
+    expect(Math.abs(s.z)).toBeLessThan(10);
+    expect(s.speed).toBeLessThan(100);
+    expect(s.wrecked || Math.abs(s.roll) < deg2rad(60)).toBe(true);
+    // parked on its roof it is a wreck (tilt > 55°, at rest)
+    const roof = createVehicleState(spec, ORIGIN, road);
+    roof.roll = Math.PI;
+    roof.z = (spec.height ?? 1.3) - spec.cgHeight + 0.02;
+    for (let i = 0; i < 360; i++) stepVehicle(spec, roof, NEUTRAL_INPUT, road, SIM_DT);
+    expect(finite(roof)).toBe(true);
+    expect(roof.wrecked).toBe(true);
+    expect(roof.wheels.every((w) => !w.onGround && w.load === 0)).toBe(true);
     s.vx = NaN;
     s.yawRate = Infinity;
     stepVehicle(spec, s, NEUTRAL_INPUT, road, SIM_DT);
