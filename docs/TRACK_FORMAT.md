@@ -163,7 +163,9 @@ passes — but on a real track, ramp bank and grade back before the final segmen
 - `sampleAt(x, y, heading)` — the `RoadQuery` used by the physics: surface under the
   point, `gradeAlong`/`bankAcross` resolved along the *query* heading, elevation, and
   on-track state;
-- `bounds`, `issues`, `startLine`, `ambientTemp`, `airDensity`.
+- `bounds`, `issues`, `startLine`, `ambientTemp`, `airDensity`;
+- `closureError` / `closureHeadingError` — the circuit's raw closure gap (m / rad)
+  measured *before* the blend (0 for stages), for editors and diagnostics.
 
 ## Validation summary
 

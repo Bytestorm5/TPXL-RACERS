@@ -27,7 +27,7 @@ export interface EngineCurveParams {
   aspiration: 'na' | 'turbo' | 'supercharged';
   /** Boost (bar gauge). */
   boost: number;
-  /** Where the torque peak sits as a fraction of redline: economy≈0.35, street≈0.5, sport≈0.65, race≈0.8. */
+  /** Where the torque peak sits as a fraction of redline: economy 0.35, street 0.5, sport 0.62, race 0.75 (see design/compile TUNES). */
   peakTorqueRpmFraction: number;
   /** How peaky the curve is (race cams have narrow bands): 0.3 (flat) .. 1.0 (peaky). */
   peakiness: number;
