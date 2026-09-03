@@ -177,6 +177,35 @@ export interface BuildAnalysis {
     aeroBalanceFront: number;
     /** Downforce (N) at 200 km/h. */
     downforce200N: number;
+
+    // --- optional extras (added by design/analyze.ts; UI must tolerate their absence) ---
+    /** Lateral acceleration (g) at which the car would roll over, reduced by body roll at the limit. */
+    rolloverG?: number;
+    /** Strut force at full bump travel / static corner load — how hard a jump landing hits. */
+    jumpLandingG?: number;
+    /** (ay_rear − ay_front)/max(...): > 0 the front gives up first (understeer at the limit). */
+    limitBalance?: number;
+    /** Which axle reaches its lateral limit first on the skidpad. */
+    limitAxle?: 'front' | 'rear';
+    /** Per-axle skidpad limits (g). */
+    skidpadFrontG?: number;
+    skidpadRearG?: number;
+    /** Linear-range part of the understeer gradient (deg/g), from cornering stiffness per load only. */
+    understeerLinearDegPerG?: number;
+    /** Ideal (CVT) drag-limited top speed (km/h): what the gearing could reach at best. */
+    topSpeedDragLimitedKmh?: number;
+    /** True when the top speed is set by the rev limiter in top gear rather than by drag. */
+    topSpeedGearingLimited?: boolean;
+    /** Road speed at the limiter in 1st gear (km/h). */
+    firstGearLimiterKmh?: number;
+    /** Which axle's discs are hotter after the 10-stop test. */
+    brakeHotAxle?: 'front' | 'rear';
+    /** Rear-axle utilisation (demand/capacity) at the moment the first axle locks. */
+    lockupRearUtilisation?: number;
+    /** Front-axle utilisation at the moment the first axle locks. */
+    lockupFrontUtilisation?: number;
+    /** Hook for a future lap-time estimate on the reference track (s). Not computed yet. */
+    lapTimeEstimateS?: number;
   };
   warnings: BuildWarning[];
   /** Short natural-language character summary ("Front-heavy, understeers at the limit, brakes fade after 6 laps"). */
