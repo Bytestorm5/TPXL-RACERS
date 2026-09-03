@@ -157,6 +157,9 @@ input[type=color].color-input { width: 34px; height: 30px; border: 1px solid var
 .metric.ok { border-color: rgba(79,209,139,0.35); }
 .metric.warn { border-color: rgba(245,196,81,0.45); }
 .metric.danger { border-color: rgba(255,90,90,0.55); }
+.metric[data-metric="lap"] .metric-value { font-size: 17px; white-space: nowrap; }
+.metric.pending .metric-value { opacity: 0.45; }
+.metric.pending .metric-sub { font-style: italic; }
 .metric-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); display: flex; align-items: center; flex-wrap: wrap; gap: 2px 6px; }
 .metric-value { font-size: 20px; font-weight: 600; margin: 2px 0 0; }
 .metric-sub { font-size: 11.5px; color: var(--muted); }
@@ -228,7 +231,12 @@ canvas.chart { width: 100%; height: 150px; display: block; background: var(--bg-
 .hud-tl { top: 12px; left: 12px; min-width: 230px; }
 .hud-pos { font-size: 28px; font-weight: 700; line-height: 1; }
 .hud-pos small { font-size: 13px; color: var(--muted); font-weight: 400; margin-left: 6px; }
-.hud-lap { color: var(--muted); font-size: 12px; margin: 4px 0 6px; }
+.hud-lap { color: var(--muted); font-size: 12px; margin: 4px 0 2px; }
+.hud-sectors { display: flex; gap: 10px; font-size: 11px; color: var(--muted); margin: 0 0 6px; }
+.hud-sectors .sec.pos { color: var(--danger); }
+.hud-sectors .sec.neg { color: var(--ok); }
+.hud-sectors .sec.live { color: var(--text); }
+.hud-sectors .sec.idle { opacity: 0.55; }
 .standings { list-style: none; margin: 0; padding: 0; font-size: 12px; }
 .standings li { display: flex; gap: 8px; padding: 2px 0; align-items: center; }
 .standings li.me { color: var(--accent-2); }
@@ -236,6 +244,8 @@ canvas.chart { width: 100%; height: 150px; display: block; background: var(--bg-
 .standings .sw { width: 8px; height: 8px; border-radius: 2px; }
 .standings .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--sans); }
 .standings .gap { color: var(--muted); }
+.standings .rs { color: var(--warn); font-size: 11px; }
+.standings .rs:empty { display: none; }
 .hud-tr { top: 12px; right: 12px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 .hud-minimap { display: block; width: 200px; height: 150px; }
 .hud-elev { font-size: 12px; color: var(--muted); }
@@ -273,7 +283,6 @@ canvas.chart { width: 100%; height: 150px; display: block; background: var(--bg-
 .hud-best { font-size: 11px; color: var(--muted); text-align: right; }
 .hud-hint { bottom: 8px; left: 12px; font-size: 11px; color: rgba(139,147,163,0.7); font-family: var(--sans); }
 .hud-msg { top: 18%; left: 50%; transform: translateX(-50%); font-size: 20px; font-weight: 700; letter-spacing: 0.1em; color: var(--accent-2); text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
-.hud-banner { top: 12px; left: 50%; transform: translateX(-50%); max-width: 640px; font-family: var(--sans); font-size: 12px; color: var(--warn); border-color: rgba(245,196,81,0.4); text-align: center; }
 .hud.sim-off > :not(.overlay) { display: none; }
 
 .telemetry { top: 12px; left: 260px; width: 560px; font-size: 11px; }

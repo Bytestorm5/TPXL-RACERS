@@ -18,6 +18,8 @@ export interface RaceSetup {
   opponents: string[];
   /** 0.3..1 */
   aiSkill: number;
+  /** Start with tyres/brakes at working temperature (RaceConfig.preheatTyres; default on). */
+  preheatTyres: boolean;
 }
 
 export interface PendingRace extends RaceSetup {
@@ -26,6 +28,12 @@ export interface PendingRace extends RaceSetup {
 
 export const DEFAULT_TRACK_ID = 'clubsprint';
 export const MAX_OPPONENTS = 7;
+/**
+ * Default opposition: a performance spread of the presets, slowest first (FWD hatch, kei car, muscle,
+ * AWD rally car, aero track car). The Drift Missile and the Ice Runner are left out on purpose — one is
+ * built to slide, the other wears snow tyres — both are still selectable.
+ */
+export const DEFAULT_OPPONENT_IDS = ['preset_club_hatch', 'preset_kei_racer', 'preset_muscle', 'preset_gravel_rally', 'preset_track_weapon'];
 
 let idCounter = 0;
 export function newCarId(): string {
@@ -133,13 +141,21 @@ export class Session {
 
   // ---------------------------------------------------------------- setup
 
+  /** The default opponent line-up (ids that exist, at most MAX_OPPONENTS). */
+  defaultOpponents(): string[] {
+    const ids = DEFAULT_OPPONENT_IDS.filter((id) => this.isPreset(id));
+    const pool = ids.length > 0 ? ids : this.presets.map((p) => p.id);
+    return pool.slice(0, Math.min(5, MAX_OPPONENTS));
+  }
+
   defaultSetup(): RaceSetup {
     return {
       trackId: DEFAULT_TRACK_ID,
       laps: 3,
       playerCarId: this.selectedCarId,
-      opponents: this.presets.slice(0, 5).map((p) => p.id),
+      opponents: this.defaultOpponents(),
       aiSkill: 0.8,
+      preheatTyres: true,
     };
   }
 
@@ -151,6 +167,7 @@ export class Session {
       playerCarId: this.findCar(s.playerCarId) ? s.playerCarId : d.playerCarId,
       opponents: s.opponents.filter((id) => this.findCar(id)).slice(0, MAX_OPPONENTS),
       aiSkill: Number.isFinite(s.aiSkill) ? Math.max(0.3, Math.min(1, s.aiSkill)) : d.aiSkill,
+      preheatTyres: s.preheatTyres !== false,
     };
   }
 
@@ -158,15 +175,16 @@ export class Session {
     saveJson(KEYS.setup, { format: 1, ...this.setup });
   }
 
-  /** Quick race from the landing page: default car vs 5 presets on clubsprint, 3 laps. */
+  /** Quick race from the landing page: default car vs 5 presets on clubsprint, 3 laps, warm tyres. */
   quickRace(): PendingRace {
     return {
       mode: 'race',
       trackId: DEFAULT_TRACK_ID,
       laps: 3,
       playerCarId: this.defaultPlayerCar().id,
-      opponents: this.presets.slice(0, 5).map((p) => p.id),
+      opponents: this.defaultOpponents(),
       aiSkill: 0.8,
+      preheatTyres: true,
     };
   }
 

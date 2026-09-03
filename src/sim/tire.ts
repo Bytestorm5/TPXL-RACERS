@@ -76,6 +76,20 @@ export const POST_PEAK_DECAY = 1;
 /** Inputs are clamped to these so ±Infinity cannot poison a step (N, m/s). */
 const MAX_LOAD = 1e7;
 const MAX_SPEED = 1e4;
+/**
+ * Sliding speed (m/s, per axis) beyond which extra slip power no longer heats the carcass: at the
+ * grip peak a tyre slides at ~2–3 m/s (κ ≈ 0.1 at 25 m/s, 6° at 25 m/s) and all of that energy
+ * warms it; a burnout or a locked wheel slides at 10–30 m/s and mostly abrades / smokes the surface
+ * layer. Wear still counts the full slip power. Game calibration: a 2 s burnout costs ~15–25 °C
+ * instead of ruining the tyre for a lap.
+ */
+export const TIRE_HEAT_SLIP_SPEED_CAP = 3;
+/**
+ * Share of the rolling-resistance power that heats the tyre (carcass hysteresis). Rolling loss is
+ * almost entirely hysteresis, so this is ~1: it is what keeps the non-driven axle of a FWD car
+ * from sitting at ambient while the driven front axle cooks.
+ */
+export const TIRE_ROLLING_HEAT_SHARE = 1.0;
 
 // ---------------------------------------------------------------------------
 // Small NaN-safe helpers (no allocation)
@@ -336,6 +350,7 @@ export function tireForcesInto(spec: TireSpec, input: TireInput, out: TireOutput
     out.fy = 0;
     out.utilisation = 0;
     out.slipPower = 0;
+    out.heatPower = 0;
     out.slipNorm = 0;
     return out as TireForcesResult;
   }
@@ -359,6 +374,7 @@ export function tireForcesInto(spec: TireSpec, input: TireInput, out: TireOutput
     out.fy = 0;
     out.utilisation = 0;
     out.slipPower = 0;
+    out.heatPower = 0;
     out.slipNorm = 0;
     return out as TireForcesResult;
   }
@@ -386,6 +402,16 @@ export function tireForcesInto(spec: TireSpec, input: TireInput, out: TireOutput
   const px = fx * kappa;
   const py = fy * tanA;
   out.slipPower = speed * ((px < 0 ? -px : px) + (py < 0 ? -py : py));
+  // Heating: per-axis sliding speed saturated (see TIRE_HEAT_SLIP_SPEED_CAP), and on loose surfaces
+  // only part of the slip happens in the rubber — the rest is the surface itself yielding (stones,
+  // snow), which carries the energy away: share = 1 − slideRetention (asphalt 1, gravel 0.4, ice 0.2).
+  const vsx = speed * (kappa < 0 ? -kappa : kappa);
+  const vsy = speed * (tanA < 0 ? -tanA : tanA);
+  const ax = fx < 0 ? -fx : fx;
+  const ay = fy < 0 ? -fy : fy;
+  const retention = surface ? unit(surface.slideRetention) : 0;
+  out.heatPower =
+    (1 - retention) * (ax * (vsx < TIRE_HEAT_SLIP_SPEED_CAP ? vsx : TIRE_HEAT_SLIP_SPEED_CAP) + ay * (vsy < TIRE_HEAT_SLIP_SPEED_CAP ? vsy : TIRE_HEAT_SLIP_SPEED_CAP));
   return out as TireForcesResult;
 }
 
@@ -396,12 +422,14 @@ export function tireForcesInto(spec: TireSpec, input: TireInput, out: TireOutput
 /**
  * Advance temperature & wear. Mutates `state`.
  *
- *   rollingHeat = load · rollingResistance · |speed| · 0.5                      (W)
- *   temp += heatingPerJoule · (slipPower + rollingHeat) · dt
+ *   rollingHeat = load · rollingResistance · |speed| · TIRE_ROLLING_HEAT_SHARE   (W)
+ *   temp += heatingPerJoule · (heatPower + rollingHeat) · dt
  *           − min(1, coolingRate · (1 + |speed|/20) · dt) · (temp − ambient)
  *   temp clamped to [ambient − 5, 250]
  *   wear += wearPerJoule · slipPower · dt, clamped to [0, 1]
  *
+ * `heatPower` is the slip power with the sliding speed saturated (`TIRE_HEAT_SLIP_SPEED_CAP`,
+ * written by `tireForcesInto`); a plain TireOutput without it heats with the full `slipPower`.
  * The cooling fraction is capped at 1 so the explicit step can never overshoot ambient for
  * large dt; at 120 Hz it is identical to the plain Euler formula. Guards: dt ≤ 0 / NaN → no-op;
  * non-finite temp or ambient → ambient / 22 °C; |speed| capped at 1e4 m/s and load at 1e7 N so
@@ -412,11 +440,13 @@ export function updateTireState(spec: TireSpec, state: TireState, out: TireOutpu
   const ambient = Number.isFinite(ambientTemp) ? ambientTemp : 22;
   const v = absMax(speed, MAX_SPEED);
   const slipPower = nonNeg(out.slipPower);
-  const rollingHeat = nonNegMax(load, MAX_LOAD) * nonNeg(spec.rollingResistance) * v * 0.5;
+  const hp = out.heatPower;
+  const heatPower = typeof hp === 'number' && hp === hp ? nonNeg(hp) : slipPower;
+  const rollingHeat = nonNegMax(load, MAX_LOAD) * nonNeg(spec.rollingResistance) * v * TIRE_ROLLING_HEAT_SHARE;
 
   let T = state.temp;
   if (!Number.isFinite(T)) T = ambient;
-  const heat = nonNeg(spec.heatingPerJoule) * (slipPower + rollingHeat) * dt;
+  const heat = nonNeg(spec.heatingPerJoule) * (heatPower + rollingHeat) * dt;
   const kRaw = nonNeg(spec.coolingRate) * (1 + v / 20) * dt;
   const k = kRaw < 1 ? kRaw : 1;
   T = T + heat - k * (T - ambient);

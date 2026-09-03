@@ -9,17 +9,25 @@ import { autoTune, type AutoTuneResult } from '../design/autotune';
 import { compileBuild, normalizeBuild } from '../design/compile';
 import { FIELD_RANGES } from '../design/parts';
 import type { AutoTuneTarget, BuildAnalysis, BuildWarning, CarBuild, HandlingIntent } from '../design/types';
+import { estimateLapTime } from '../sim/ai';
 import type { VehicleSpec } from '../sim/types';
 import { drawEngineChart, drawGearChart } from './charts';
 import { append, clear, h, modal, Text, toast, type Child } from './dom';
 import { fieldLabel, GEAR_SHAPE_PATHS, getPath, SECTIONS, setPath, type FieldDesc, type SectionDesc } from './fields';
-import { fmt, fmtInt, fmtStep, humanizePath, pct } from './format';
+import { fmt, fmtInt, fmtLap, fmtStep, humanizePath, pct } from './format';
 import { ROUTES, type Nav, type Screen } from './screen';
 import { newCarId, type Session } from './state';
 
 interface Control {
   refresh(): void;
 }
+
+/** Tracks the "Estimated lap" read-out is computed for (compiled once, cached in the session). */
+const ESTIMATE_TRACKS = ['clubsprint', 'ridgeway'] as const;
+/** Grip usage of the estimate's ideal driver (AI skill ≈ 0.6); the AI itself laps ~10 % slower. */
+const ESTIMATE_GRIP_USAGE = 0.9;
+/** estimateLapTime costs ~50–100 ms per track: run it after the sliders have settled, off the analyze path. */
+const ESTIMATE_DEBOUNCE_MS = 300;
 
 const INTENTS: Array<{ value: HandlingIntent; label: string; hint: string }> = [
   { value: 'stable', label: 'Stable', hint: '+2.5 deg/g understeer: forgiving, runs wide at the limit.' },
@@ -39,6 +47,9 @@ class GarageScreen {
   private analysis!: BuildAnalysis;
   private controls: Control[] = [];
   private saveTimer = 0;
+  private estimateTimer = 0;
+  private estimateSeq = 0;
+  private lastEstimateText = '';
   private intent: HandlingIntent = 'neutral';
   private showHints = true;
 
@@ -106,6 +117,10 @@ class GarageScreen {
   unmount(): void {
     window.removeEventListener('resize', this.onResize);
     document.removeEventListener('keydown', this.onKey);
+    if (this.estimateTimer) {
+      window.clearTimeout(this.estimateTimer);
+      this.estimateTimer = 0;
+    }
     if (this.saveTimer) {
       window.clearTimeout(this.saveTimer);
       this.session.saveCars();
@@ -305,6 +320,7 @@ class GarageScreen {
               playerCarId: this.build.id,
               opponents: [],
               aiSkill: 0.8,
+              preheatTyres: this.session.setup.preheatTyres !== false,
             };
             this.nav(ROUTES.run);
           },
@@ -529,7 +545,11 @@ class GarageScreen {
       power: m('power', 'Power · torque'),
       temp: m('temp', 'Brakes after 10 stops'),
       down: m('down', 'Downforce @200'),
+      jump: m('jump', 'Jump landing'),
+      lap: m('lap', 'Estimated lap'),
     };
+    this.metrics.lap.el.dataset.metric = 'lap';
+    this.metrics.skid.el.dataset.metric = 'skidpad';
     const usBar = h(
       'div',
       { class: 'balance' },
@@ -586,6 +606,37 @@ class GarageScreen {
     this.drawCharts();
     debugHook.analysis = this.analysis;
     debugHook.build = this.build;
+    this.scheduleEstimate();
+  }
+
+  /**
+   * "Estimated lap" read-out: estimateLapTime (racing line + quasi-static speed profile) on the two
+   * reference circuits, debounced ESTIMATE_DEBOUNCE_MS after the last change so slider drags stay
+   * responsive. Tracks are compiled once (Session cache); the racing line is cached inside ai.ts.
+   */
+  private scheduleEstimate(): void {
+    if (this.estimateTimer) window.clearTimeout(this.estimateTimer);
+    const seq = ++this.estimateSeq;
+    this.metrics.lap.set(this.lastEstimateText || '…', 'computing…', 'pending');
+    debugHook.lapEstimate = null;
+    this.estimateTimer = window.setTimeout(() => {
+      this.estimateTimer = 0;
+      if (seq !== this.estimateSeq) return;
+      const spec = this.spec;
+      const out: Record<string, number> = {};
+      for (const id of ESTIMATE_TRACKS) {
+        try {
+          const t = estimateLapTime(spec, this.session.getTrack(id), ESTIMATE_GRIP_USAGE);
+          out[id] = Number.isFinite(t) && t > 0 ? t : NaN;
+        } catch (err) {
+          console.warn(`estimateLapTime failed on ${id}:`, err);
+          out[id] = NaN;
+        }
+      }
+      debugHook.lapEstimate = out;
+      this.lastEstimateText = `${fmtLap(out.clubsprint, 1)} · ${fmtLap(out.ridgeway, 1)}`;
+      this.metrics.lap.set(this.lastEstimateText, `Clubsprint · Ridgeway — racing-line estimate at ${Math.round(ESTIMATE_GRIP_USAGE * 100)} % grip use; the AI laps ~10 % slower`, '');
+    }, ESTIMATE_DEBOUNCE_MS);
   }
 
   private drawCharts(): void {
@@ -609,10 +660,22 @@ class GarageScreen {
       m.topSpeedGearingLimited ? 'warn' : '',
     );
     this.metrics.mass.set(`${fmtInt(m.massKg)} kg`, `${pct(m.frontWeightFraction)} front · ${pct(1 - m.frontWeightFraction)} rear`);
+    // Skidpad with the rollover threshold next to it: warning colour once the car corners within
+    // 90 % of the g it tips at. Every metric past the frozen core set is optional.
+    const roll = m.rolloverG;
+    const nearRoll = roll !== undefined && Number.isFinite(roll) && m.skidpadG >= 0.9 * roll;
+    const axleNote = m.skidpadFrontG !== undefined || m.skidpadRearG !== undefined ? `front ${fmt(m.skidpadFrontG ?? NaN, 2)} · rear ${fmt(m.skidpadRearG ?? NaN, 2)}` : '';
+    const limitNote = m.limitAxle ? `${m.limitAxle} axle gives up first` : m.limitBalance !== undefined ? (m.limitBalance > 0 ? 'front gives up first' : m.limitBalance < 0 ? 'rear gives up first' : 'both axles let go together') : '';
     this.metrics.skid.set(
       `${fmt(m.skidpadG, 2)} g`,
-      `front ${fmt(m.skidpadFrontG ?? 0, 2)} · rear ${fmt(m.skidpadRearG ?? 0, 2)}${m.rolloverG !== undefined ? ` · rolls at ${fmt(m.rolloverG, 2)}` : ''}`,
-      m.rolloverG !== undefined && m.skidpadG > 0.9 * m.rolloverG ? 'danger' : '',
+      [axleNote, limitNote].filter(Boolean).join(' · '),
+      nearRoll ? 'danger' : '',
+      roll !== undefined && Number.isFinite(roll) ? `rolls at ${fmt(roll, 2)} g` : '',
+    );
+    const jump = m.jumpLandingG;
+    this.metrics.jump.set(
+      jump !== undefined && Number.isFinite(jump) ? `${fmt(jump, 1)}× static` : '—',
+      jump !== undefined && Number.isFinite(jump) ? 'strut force at full bump vs the static corner load' : 'no jump-landing estimate for this build',
     );
     const lock = m.lockupAxle;
     this.metrics.brake.set(
@@ -750,5 +813,9 @@ function changeList(res: AutoTuneResult): Child {
   );
 }
 
-/** Debug/test hook (window.__racers.garage). */
-export const debugHook: { analysis: BuildAnalysis | null; build: CarBuild | null } = { analysis: null, build: null };
+/** Debug/test hook (window.__racers.garage). `lapEstimate` is null while an estimate is pending. */
+export const debugHook: { analysis: BuildAnalysis | null; build: CarBuild | null; lapEstimate: Record<string, number> | null } = {
+  analysis: null,
+  build: null,
+  lapEstimate: null,
+};

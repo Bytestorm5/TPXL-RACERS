@@ -172,6 +172,11 @@ export const WRECK_RESET_DELAY = 2.5;
  */
 export const OFF_WORLD_DISTANCE = 40;
 export const OFF_WORLD_DELAY = 3;
+/** An AI car whose driver reports `stuckFor` beyond this (s) is put back on the road like a wreck. */
+export const STUCK_RESET_DELAY = 10;
+/** Pre-heated start (formation-lap simplification): tyres this far below their optimum (°C), brakes at this temperature. */
+export const PREHEAT_TYRE_BELOW_OPTIMAL = 15;
+export const PREHEAT_BRAKE_TEMP = 120;
 /** Collision circle radius = width/2 + this (m). */
 export const COLLISION_RADIUS_MARGIN = 0.1;
 /** Normal restitution of car-to-car contacts. */
@@ -321,6 +326,7 @@ class RaceImpl implements Race {
       const spec = entry.spec;
       const slot = track.gridSlot(i);
       const state = createVehicleState(spec, { x: slot.x, y: slot.y, heading: slot.heading }, track);
+      if (config.preheatTyres !== false) preheat(spec, state);
       if (startSpeed > 0) launchAtSpeed(spec, state, startSpeed);
       const timing: CarTiming = {
         lap: 0,
@@ -456,11 +462,16 @@ class RaceImpl implements Race {
     }
     const pose = track.poseAt(s, 0);
     resetVehicleState(car.entry.spec, st, { x: pose.x, y: pose.y, heading: pose.heading }, track);
+    // A reset is a "pushed back onto the road" moment: with pre-heated starts the tyres come back at
+    // working temperature too (raise-only) — cold slicks on a gravel climb would otherwise strand the
+    // car at the same spot forever.
+    if (this.config.preheatTyres !== false) preheat(car.entry.spec, st);
     zeroInput(car.input);
     car.lastImpact = 0;
     it.wreckTimer = 0;
     it.offWorldTimer = 0;
     it.lastS = s;
+    if (it.ai && it.ai.reset) it.ai.reset(); // forget recovery / stuck state and the projection hint
     const tm = car.timing;
     tm.resets = (tm.resets ?? 0) + 1;
     // A reset that moves the car across the start line counts like driving across it (a car put back
@@ -554,8 +565,14 @@ class RaceImpl implements Race {
       const road = st.road;
       if (Math.abs(road.lateral) - road.halfWidth > OFF_WORLD_DISTANCE) {
         it.offWorldTimer += SIM_DT;
-        if (it.offWorldTimer >= OFF_WORLD_DELAY - 1e-9) this.resetCar(i);
+        if (it.offWorldTimer >= OFF_WORLD_DELAY - 1e-9) {
+          this.resetCar(i);
+          continue;
+        }
       } else it.offWorldTimer = 0;
+      // An AI driver that reports itself hopelessly stuck (e.g. a slick-shod car in sand, where the
+      // tyres cannot even beat the rolling resistance) is put back on the road like a wreck.
+      if (it.ai && (it.ai.stuckFor ?? 0) > STUCK_RESET_DELAY) this.resetCar(i);
     }
   }
 
@@ -826,6 +843,17 @@ class RaceImpl implements Race {
     applyWorldImpulse(specB, sb, px, py, jx, jy);
     if (jn > a.lastImpact) a.lastImpact = jn;
     if (jn > b.lastImpact) b.lastImpact = jn;
+  }
+}
+
+/** Formation-lap simplification: tyres start near their working temperature, brakes warm. */
+function preheat(spec: VehicleSpec, state: VehicleState): void {
+  for (let i = 0; i < 4; i++) {
+    const tire = i < 2 ? spec.tires.front : spec.tires.rear;
+    const w = state.wheels[i];
+    const target = tire.optimalTemp - PREHEAT_TYRE_BELOW_OPTIMAL;
+    if (Number.isFinite(target) && target > w.tire.temp) w.tire.temp = target;
+    if (PREHEAT_BRAKE_TEMP > w.brake.temp) w.brake.temp = PREHEAT_BRAKE_TEMP;
   }
 }
 

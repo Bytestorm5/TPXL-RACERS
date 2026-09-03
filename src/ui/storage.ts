@@ -4,7 +4,7 @@
  *
  * Keys:
  *   racers.cars.v1   { format: 1, cars: CarBuild[], selectedId?: string }
- *   racers.setup.v1  { format: 1, trackId, laps, playerCarId, opponents: string[], aiSkill }
+ *   racers.setup.v1  { format: 1, trackId, laps, playerCarId, opponents: string[], aiSkill, preheatTyres? }
  *   racers.best.v1   { format: 1, best: Record<`${trackId}|${carId}`, number> }
  */
 import type { CarBuild } from '../design/types';
@@ -83,6 +83,8 @@ export interface SetupFile {
   playerCarId: string;
   opponents: string[];
   aiSkill: number;
+  /** Added later; absent in older saves (→ default on). */
+  preheatTyres?: boolean;
 }
 
 export function isSetupFile(v: unknown): v is SetupFile {
@@ -94,7 +96,8 @@ export function isSetupFile(v: unknown): v is SetupFile {
     typeof v.playerCarId === 'string' &&
     Array.isArray(v.opponents) &&
     v.opponents.every((o) => typeof o === 'string') &&
-    typeof v.aiSkill === 'number'
+    typeof v.aiSkill === 'number' &&
+    (v.preheatTyres === undefined || typeof v.preheatTyres === 'boolean')
   );
 }
 

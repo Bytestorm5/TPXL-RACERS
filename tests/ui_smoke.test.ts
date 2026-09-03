@@ -58,6 +58,8 @@ describe('storage validators', () => {
     expect(isCarsFile({ format: 1, cars: [{ id: 'x' }] })).toBe(false);
     expect(isCarBuildLike(null)).toBe(false);
     expect(isSetupFile({ format: 1, trackId: 'clubsprint', laps: 3, playerCarId: 'a', opponents: ['b'], aiSkill: 0.8 })).toBe(true);
+    expect(isSetupFile({ format: 1, trackId: 'clubsprint', laps: 3, playerCarId: 'a', opponents: ['b'], aiSkill: 0.8, preheatTyres: false })).toBe(true);
+    expect(isSetupFile({ format: 1, trackId: 'clubsprint', laps: 3, playerCarId: 'a', opponents: ['b'], aiSkill: 0.8, preheatTyres: 'yes' })).toBe(false);
     expect(isSetupFile({ format: 1, trackId: 'clubsprint', laps: '3', playerCarId: 'a', opponents: [], aiSkill: 0.8 })).toBe(false);
     expect(isBestFile({ format: 1, best: { 'clubsprint|a': 61.2 } })).toBe(true);
     expect(isBestFile({ format: 1, best: { 'clubsprint|a': -1 } })).toBe(false);
@@ -70,12 +72,16 @@ describe('session & race config (no localStorage in node)', () => {
     expect(s.cars.length).toBeGreaterThan(0);
     expect(s.findCar(s.selectedCarId)).toBeDefined();
     for (const t of s.trackSpecs) {
-      const cfg = buildRaceConfig(s, { mode: 'race', trackId: t.id, laps: 2, playerCarId: s.selectedCarId, opponents: s.presets.map((p) => p.id), aiSkill: 0.9 });
+      const cfg = buildRaceConfig(s, { mode: 'race', trackId: t.id, laps: 2, playerCarId: s.selectedCarId, opponents: s.presets.map((p) => p.id), aiSkill: 0.9, preheatTyres: true });
       expect(cfg.entries.length).toBe(1 + s.presets.length);
-      expect(cfg.entries[0].driver.kind).toBe('player');
+      // opponents fill the grid in line-up order, the player starts from the back
+      expect(cfg.entries[cfg.entries.length - 1].driver.kind).toBe('player');
+      expect(cfg.entries.filter((e) => e.driver.kind === 'player').length).toBe(1);
       expect(cfg.laps).toBe(t.closed ? 2 : 1);
+      expect(cfg.preheatTyres).toBe(true);
       const names = new Set(cfg.entries.map((e) => e.name));
       expect(names.size).toBe(cfg.entries.length);
+      expect(cfg.entries[cfg.entries.length - 1].name).toBe(s.findCar(s.selectedCarId)!.name);
       for (const e of cfg.entries) {
         expect(Number.isFinite(e.spec.mass)).toBe(true);
         if (e.driver.kind === 'ai') {
@@ -84,6 +90,22 @@ describe('session & race config (no localStorage in node)', () => {
         }
       }
     }
+    const cold = buildRaceConfig(s, { mode: 'race', trackId: 'clubsprint', laps: 1, playerCarId: s.selectedCarId, opponents: [], aiSkill: 0.8, preheatTyres: false });
+    expect(cold.preheatTyres).toBe(false);
+    expect(cold.entries.length).toBe(1);
+  });
+
+  it('defaults to a performance spread of presets with warm tyres', () => {
+    const s = new Session();
+    const d = s.defaultSetup();
+    expect(d.preheatTyres).toBe(true);
+    expect(d.opponents.length).toBe(5);
+    expect(new Set(d.opponents).size).toBe(5);
+    for (const id of d.opponents) expect(s.isPreset(id)).toBe(true);
+    expect(d.opponents).not.toContain('preset_drift_missile');
+    expect(d.opponents).not.toContain('preset_ice_runner');
+    expect(s.quickRace().opponents).toEqual(d.opponents);
+    expect(s.quickRace().preheatTyres).toBe(true);
   });
 
   it('records best laps only when faster', () => {

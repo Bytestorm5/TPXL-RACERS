@@ -320,6 +320,43 @@ function axleSlipAngle(
   return 0.5 * (lo + hi);
 }
 
+/**
+ * Body roll angle (rad) under a roll moment (Nm) with the same strut model as `sim/vehicle.ts`:
+ * springs + anti-roll bars (`rollStiffnessFront/Rear`) plus, once an outer strut is compressed past
+ * `JUMP_BUMP_STOP_AT` × travel, a bump stop `JUMP_BUMP_STOP_RATE` × the spring rate. Without the
+ * stop a soft, tall car reads 30° of roll at its limit where the model actually sits on its stops
+ * at ~6–12°. Solved by bisection (the moment is monotonic in the angle).
+ */
+export function bodyRollAngle(spec: VehicleSpec, moment: number): number {
+  const s = spec.suspension;
+  const Ksum = Math.max(s.rollStiffnessFront, 0) + Math.max(s.rollStiffnessRear, 0);
+  if (!(moment > 0)) return 0;
+  if (!(Ksum > 0)) return 0.5;
+  const travel = Math.max(s.travel, 0.02);
+  const bumpAt = JUMP_BUMP_STOP_AT * travel;
+  const axles: Array<[number, number]> = [
+    [Math.max(s.springRateFront, 0), Math.max(spec.trackFront, 0.5)],
+    [Math.max(s.springRateRear, 0), Math.max(spec.trackRear, 0.5)],
+  ];
+  const momentAt = (phi: number): number => {
+    let m = Ksum * phi;
+    for (const [k, track] of axles) {
+      const over = (phi * track) / 2 - bumpAt;
+      if (over > 0) m += JUMP_BUMP_STOP_RATE * k * over * (track / 2);
+    }
+    return m;
+  };
+  let lo = 0;
+  let hi = 1;
+  if (momentAt(hi) < moment) return hi;
+  for (let i = 0; i < 30; i++) {
+    const mid = 0.5 * (lo + hi);
+    if (momentAt(mid) < moment) lo = mid;
+    else hi = mid;
+  }
+  return 0.5 * (lo + hi);
+}
+
 export function analyzeHandling(spec: VehicleSpec): HandlingAnalysis {
   const c = carModel(spec);
   const s = spec.suspension;
@@ -376,8 +413,7 @@ export function analyzeHandling(spec: VehicleSpec): HandlingAnalysis {
   const understeerLinear = rad2deg(1 / csF - 1 / csR);
 
   // Rollover: static stability factor, helped by the downforce at this speed, reduced by body roll.
-  const Ksum = Math.max(s.rollStiffnessFront, 0) + Math.max(s.rollStiffnessRear, 0);
-  const rollAngle = Ksum > 0 ? (c.m * ay * (spec.cgHeight - rollAxisHeight(spec))) / Ksum : 0.5;
+  const rollAngle = bodyRollAngle(spec, c.m * ay * (spec.cgHeight - rollAxisHeight(spec)));
   const halfTrack = 0.5 * Math.min(spec.trackFront, spec.trackRear);
   const h = spec.cgHeight > 0.05 ? spec.cgHeight : 0.05;
   const W = c.weights.front + c.weights.rear;
@@ -959,15 +995,25 @@ export function analyzeAero(spec: VehicleSpec): AeroAnalysis {
   };
 }
 
-/** Strut force at full bump / static corner load, worst axle. Bump stop = 3 × spring rate over the last 10 % of travel. */
+/**
+ * Strut force at full bump travel / static corner load, worst axle. Mirrors the strut model of
+ * `sim/vehicle.ts`: spring `k` over the whole travel plus a bump stop of `8k` engaging beyond
+ * `JUMP_BUMP_STOP_AT` (55 %) of the travel — so at full travel the strut carries
+ * `F0 + k·travel·(1 + 8·0.45)`. Soft, long-travel rally suspension lands at ~5× static, a stiff,
+ * low track car well over 10×.
+ */
+export const JUMP_BUMP_STOP_AT = 0.55;
+export const JUMP_BUMP_STOP_RATE = 8;
+/** Above this landing factor the summary calls a rally car's suspension stiff (the Gravel Rally preset is ~5×). */
+export const JUMP_STIFF_FOR_RALLY = 8;
 export function jumpLandingFactor(spec: VehicleSpec): number {
   const weights = staticAxleWeights(spec);
   const s = spec.suspension;
   const travel = Math.max(s.travel, 0.02);
   const one = (F0: number, k: number): number => {
     if (!(F0 > 0)) return 1;
-    const bump = 3 * k * 0.1 * travel;
-    return (F0 + k * 0.55 * travel + bump) / F0;
+    const bump = JUMP_BUMP_STOP_RATE * k * (1 - JUMP_BUMP_STOP_AT) * travel;
+    return (F0 + k * travel + bump) / F0;
   };
   return Math.max(one(weights.front / 2, Math.max(s.springRateFront, 0)), one(weights.rear / 2, Math.max(s.springRateRear, 0)));
 }
@@ -1193,11 +1239,14 @@ export function analyzeBuild(build: CarBuild, spec: VehicleSpec): BuildAnalysis 
   const balanceWord =
     handling.understeerGradientDegPerG > 1.5 ? 'understeers' : handling.understeerGradientDegPerG < -0.5 ? 'oversteers' : 'is close to neutral';
   const limitWord = handling.limitAxle === 'front' ? 'the front tyres give up first' : 'the rear tyres give up first';
+  const driftRearSummary = lockup.lockupAxle === 'rear' && build.tires.rear.compound === 'drift';
   const brakeWord = !lockup.canLock
     ? 'the brakes are too weak to lock a wheel'
     : lockup.lockupAxle === 'balanced'
       ? `the brakes are well balanced (${fmt(lockup.lockupG)} g${spec.brakes.abs ? ', ABS' : ''})`
-      : `the ${lockup.lockupAxle} brakes lock first at ${fmt(lockup.lockupG)} g${spec.brakes.abs ? ' (ABS)' : ''}`;
+      : driftRearSummary
+        ? `the REAR brakes lock first at ${fmt(lockup.lockupG)} g — deliberate on drift tyres (a dab of brake starts the slide) but it will spin the car in a straight-line stop`
+        : `the ${lockup.lockupAxle} brakes lock first at ${fmt(lockup.lockupG)} g${spec.brakes.abs ? ' (ABS)' : ''}`;
   const fadeWord =
     thermal.hotC > hotSpec.fadeStartTemp
       ? `and fade after repeated stops (${Math.round(thermal.hotC)} °C)`
@@ -1213,7 +1262,7 @@ export function analyzeBuild(build: CarBuild, spec: VehicleSpec): BuildAnalysis 
     `${balanceWord} at the limit — ${limitWord} at ${fmt(handling.skidpadG)} g. ` +
     `${brakeWord[0].toUpperCase()}${brakeWord.slice(1)} ${fadeWord}; ${tractionWord}, 0–100 in ${fmt(launch.accel0to100s, 1)} s, top speed ${Math.round(launch.topSpeedKmh)} km/h${launch.gearingLimited ? ' (on the limiter)' : ''}.`;
   if (isRallyTyre(build)) {
-    summary += ` Landing a jump loads the struts to ${fmt(jump, 1)}× their static load${jump > 3 ? ' — stiff for a rally car' : ''}.`;
+    summary += ` Landing a jump loads the struts to ${fmt(jump, 1)}× their static load${jump > JUMP_STIFF_FOR_RALLY ? ' — stiff for a rally car' : ''}.`;
   }
 
   return {

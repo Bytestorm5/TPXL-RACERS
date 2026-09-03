@@ -6,16 +6,21 @@
  * Loop: requestAnimationFrame → race.step(dt) with dt capped at 8 × SIM_DT (slow-motion rather
  * than a spiral) → render. HUD strings are rebuilt only when their values change.
  *
- * The race is created lazily when the screen is entered; if the simulation throws (stubs not
- * implemented, or a runtime fault) a friendly panel is shown instead of a crash.
+ * The race is created when the screen is entered; if the simulation throws (a runtime fault) a
+ * friendly panel is shown instead of a crash. Standings, lap counts, sectors, gaps and the results
+ * overlay follow src/sim/race.ts semantics (progress ordering, finished-first, `raceSummary`).
+ *
+ * `raceDebug` (window.__racers.race) exposes the live race, a rAF performance probe, flags observed
+ * on any car (airborne / wrecked / reset) and two e2e helpers: `advance(seconds)` steps the race
+ * synchronously and `autopilot(on)` hands the player car to an AI driver.
  */
 import { compileBuild } from '../design/compile';
+import { createAiDriver, type AiDriver } from '../sim/ai';
 import { brakeEffectiveness } from '../sim/brakes';
-import { createRace, type Race, type RaceCar, type RaceConfig, type RaceEntry, type RaceSnapshot } from '../sim/race';
+import { createRace, raceSummary, type CarTiming, type Race, type RaceCar, type RaceConfig, type RaceEntry, type RaceSnapshot } from '../sim/race';
 import type { CompiledTrack } from '../sim/track';
 import type { DriverInput, VehicleState } from '../sim/types';
 import { SIM_DT } from '../sim/vehicle';
-import { createFallbackRace } from './devRace';
 import { Bar, ClassSwitch, clear, h, Text, toast } from './dom';
 import { fmtDelta, fmtInt, fmtLap } from './format';
 import { ROUTES, type Nav, type Screen } from './screen';
@@ -23,7 +28,8 @@ import type { PendingRace, Session } from './state';
 import { renderTrackImage, SURFACE_LABEL, type TrackImage } from './trackRender';
 
 /** Longest sim advance per frame (s): 8 substeps at 120 Hz. Beyond that we run slow-motion. */
-const MAX_FRAME_DT = 8 * SIM_DT;
+const MAX_SUBSTEPS_PER_FRAME = 8;
+const MAX_FRAME_DT = MAX_SUBSTEPS_PER_FRAME * SIM_DT;
 const STEER_RAMP = 3.5; // per second toward the key
 const STEER_DECAY = 5; // per second back to centre
 const THROTTLE_RAMP = 4;
@@ -31,27 +37,134 @@ const BRAKE_RAMP = 6;
 const PEDAL_RELEASE = 10;
 const SKID_MAX_CARS = 6;
 const DELTA_BINS = 120;
+/** Frames kept by the rAF performance probe. */
+const PERF_WINDOW = 300;
 
-export const raceDebug: {
-  race: Race | null;
-  error: string | null;
-  /** True when the UI-side free-run fallback is driving (src/sim/race.ts still a stub). */
-  fallback: boolean;
-  frames: number;
-  playerIndex: number;
-  playerSpeed(): number;
-} = {
-  race: null,
-  error: null,
-  fallback: false,
+// ---------------------------------------------------------------------------
+// Debug / e2e hook (window.__racers.race)
+// ---------------------------------------------------------------------------
+
+interface DebugView {
+  advance(seconds: number): number;
+  setAutopilot(on: boolean): void;
+}
+let activeView: DebugView | null = null;
+
+/** Ring buffers of the last PERF_WINDOW frames: frame interval, race.step time, render time (ms). */
+const perf = {
+  frame: new Float32Array(PERF_WINDOW),
+  sim: new Float32Array(PERF_WINDOW),
+  render: new Float32Array(PERF_WINDOW),
+  head: 0,
+  count: 0,
+  reset(): void {
+    this.head = 0;
+    this.count = 0;
+  },
+  record(frameMs: number, simMs: number, renderMs: number): void {
+    this.frame[this.head] = frameMs;
+    this.sim[this.head] = simMs;
+    this.render[this.head] = renderMs;
+    this.head = (this.head + 1) % PERF_WINDOW;
+    if (this.count < PERF_WINDOW) this.count++;
+  },
+};
+
+function stats(arr: Float32Array, n: number): { avg: number; p95: number; max: number } {
+  if (n === 0) return { avg: 0, p95: 0, max: 0 };
+  const v = Array.from(arr.subarray(0, n)).sort((a, b) => a - b);
+  let sum = 0;
+  for (const x of v) sum += x;
+  return { avg: sum / n, p95: v[Math.min(n - 1, Math.floor(n * 0.95))], max: v[n - 1] };
+}
+
+export interface RaceSeen {
+  airborne: boolean;
+  wrecked: boolean;
+  reset: boolean;
+  maxRoll: number;
+  maxAirTime: number;
+}
+
+export const raceDebug = {
+  race: null as Race | null,
+  error: null as string | null,
   frames: 0,
   playerIndex: -1,
-  playerSpeed() {
+  autopilotOn: false,
+  /** Flags observed on any car since the race was created (also while `advance` runs). */
+  seen: { airborne: false, wrecked: false, reset: false, maxRoll: 0, maxAirTime: 0 } as RaceSeen,
+  playerSpeed(): number {
     const r = this.race;
     if (!r || this.playerIndex < 0) return NaN;
     return r.cars[this.playerIndex].state.speed;
   },
+  /** rAF probe over the last PERF_WINDOW frames (ms): frame interval, race.step and render durations. */
+  perfStats(): {
+    frames: number;
+    fps: number;
+    frameAvgMs: number;
+    frameP95Ms: number;
+    frameMaxMs: number;
+    simAvgMs: number;
+    simP95Ms: number;
+    simMaxMs: number;
+    renderAvgMs: number;
+    renderP95Ms: number;
+    renderMaxMs: number;
+  } {
+    const n = perf.count;
+    const f = stats(perf.frame, n);
+    const s = stats(perf.sim, n);
+    const r = stats(perf.render, n);
+    return {
+      frames: n,
+      fps: f.avg > 0 ? 1000 / f.avg : 0,
+      frameAvgMs: f.avg,
+      frameP95Ms: f.p95,
+      frameMaxMs: f.max,
+      simAvgMs: s.avg,
+      simP95Ms: s.p95,
+      simMaxMs: s.max,
+      renderAvgMs: r.avg,
+      renderP95Ms: r.p95,
+      renderMaxMs: r.max,
+    };
+  },
+  perfReset(): void {
+    perf.reset();
+  },
+  /** Advance the race by `seconds` of simulated time synchronously (e2e acceleration). Returns race.time. */
+  advance(seconds: number): number {
+    return activeView ? activeView.advance(seconds) : NaN;
+  },
+  /** Hand the player car to an AI driver (e2e / demo); `false` gives the keyboard back. */
+  autopilot(on: boolean): void {
+    activeView?.setAutopilot(on);
+  },
 };
+
+function resetSeen(): void {
+  const s = raceDebug.seen;
+  s.airborne = s.wrecked = s.reset = false;
+  s.maxRoll = s.maxAirTime = 0;
+}
+
+/** Record the vertical-DOF / wreck / reset flags of every car (frame and `advance` loops). */
+function observe(race: Race): void {
+  const s = raceDebug.seen;
+  for (const car of race.cars) {
+    const st = car.state;
+    if (st.airborne) {
+      s.airborne = true;
+      if (st.airTime > s.maxAirTime) s.maxAirTime = st.airTime;
+    }
+    if (st.wrecked) s.wrecked = true;
+    const r = Math.abs(st.roll);
+    if (Number.isFinite(r) && r > s.maxRoll) s.maxRoll = r;
+    if ((car.timing.resets ?? 0) > 0) s.reset = true;
+  }
+}
 
 export function mountRaceView(root: HTMLElement, session: Session, nav: Nav): Screen {
   const pending: PendingRace = session.pending ?? {
@@ -61,13 +174,18 @@ export function mountRaceView(root: HTMLElement, session: Session, nav: Nav): Sc
     playerCarId: session.setup.playerCarId,
     opponents: [...session.setup.opponents],
     aiSkill: session.setup.aiSkill,
+    preheatTyres: session.setup.preheatTyres !== false,
   };
   session.pending = null;
   const view = new RaceView(root, session, nav, pending);
   return { unmount: () => view.unmount() };
 }
 
-/** Build the RaceConfig for a pending race. Names are de-duplicated. */
+/**
+ * Build the RaceConfig for a pending race. Opponents fill the grid in line-up order (race.ts puts
+ * entry i on gridSlot(i)), the player starts from the back. Names are de-duplicated (the player keeps
+ * the plain name). Each opponent further down the line-up drives 2.5 % more cautiously.
+ */
 export function buildRaceConfig(session: Session, pending: PendingRace): RaceConfig {
   const track = session.getTrack(pending.trackId);
   const player = session.findCar(pending.playerCarId) ?? session.defaultPlayerCar();
@@ -77,13 +195,15 @@ export function buildRaceConfig(session: Session, pending: PendingRace): RaceCon
     names.set(n, c + 1);
     return c === 0 ? n : `${n} ${c + 1}`;
   };
-  const entries: RaceEntry[] = [{ spec: compileBuild(player), driver: { kind: 'player' }, name: uniq(player.name) }];
+  const playerName = uniq(player.name);
+  const entries: RaceEntry[] = [];
   pending.opponents.forEach((id, i) => {
     const b = session.findCar(id);
     if (!b) return;
     const skill = Math.max(0.3, Math.min(1, pending.aiSkill * (1 - 0.025 * i)));
     entries.push({ spec: compileBuild(b), driver: { kind: 'ai', skill, aggression: 0.5, seed: 1000 + i }, name: uniq(b.name) });
   });
+  entries.push({ spec: compileBuild(player), driver: { kind: 'player' }, name: playerName });
   return {
     track,
     entries,
@@ -91,6 +211,7 @@ export function buildRaceConfig(session: Session, pending: PendingRace): RaceCon
     startSpeed: 0,
     seed: 42,
     collisions: true,
+    preheatTyres: pending.preheatTyres !== false,
   };
 }
 
@@ -153,20 +274,23 @@ class StandingRow {
   private readonly pos = new Text('span', 'pos');
   private readonly sw = h('span', { class: 'sw' });
   private readonly name = new Text('span', 'nm');
+  private readonly rs = new Text('span', 'rs');
   private readonly gap = new Text('span', 'gap');
   private lastCar = -1;
   private readonly cls: ClassSwitch;
   constructor() {
-    this.el = h('li', null, this.pos.el, this.sw, this.name.el, this.gap.el);
+    this.rs.el.title = 'resets (R key, rollover or off-world watchdog)';
+    this.el = h('li', null, this.pos.el, this.sw, this.name.el, this.rs.el, this.gap.el);
     this.cls = new ClassSwitch(this.el, '');
   }
-  set(rank: number, car: RaceCar, gap: string, me: boolean): void {
+  set(rank: number, car: RaceCar, gap: string, resets: number, me: boolean): void {
     this.pos.set(String(rank));
     if (car.index !== this.lastCar) {
       this.lastCar = car.index;
       this.sw.style.background = car.entry.spec.color;
       this.name.set(car.entry.name);
     }
+    this.rs.set(resets > 0 ? `↺${resets}` : '');
     this.gap.set(gap);
     this.cls.set(me ? 'me' : '');
   }
@@ -222,13 +346,12 @@ class RaceView {
   private race: Race | null = null;
   private playerIndex = -1;
   private simError: string | null = null;
-  private fallback = false;
   private config: RaceConfig | null = null;
-  private readonly fallbackBanner = h(
-    'div',
-    { class: 'hud-panel hud-banner', hidden: true },
-    'FREE RUN FALLBACK — src/sim/race.ts is still a stub: your car runs on the real vehicle model, but there are no opponents, collisions or race positions.',
-  );
+  /** Debug / demo: an AI driver controlling the player car (raceDebug.autopilot). */
+  private autopilotAi: AiDriver | null = null;
+  private autopilotOthers: VehicleState[] = [];
+  /** Substep accumulator used while the autopilot drives (see stepRace). */
+  private autoAcc = 0;
 
   private dpr = 1;
   private readonly cam = { x: 0, y: 0, zoom: 6 };
@@ -270,6 +393,9 @@ class RaceView {
   private readonly posText = new Text('span');
   private readonly posOf = new Text('small');
   private readonly lapText = new Text('div', 'hud-lap');
+  private readonly sectorsEl = h('div', { class: 'hud-sectors' });
+  private readonly sectorText: Text[] = [];
+  private readonly sectorCls: ClassSwitch[] = [];
   private readonly standingsEl = h('ul', { class: 'standings' });
   private standingRows: StandingRow[] = [];
   private readonly minimap = h('canvas', { class: 'hud-minimap', width: 200, height: 150 });
@@ -300,7 +426,7 @@ class RaceView {
   private readonly wreckedEl = h(
     'div',
     { class: 'overlay', hidden: true },
-    h('div', { class: 'wrecked-box' }, 'WRECKED — R to reset', h('small', null, 'The car rolled over. Press R to put it back on the road.')),
+    h('div', { class: 'wrecked-box' }, 'WRECKED — resetting', h('small', null, 'The car rolled over. It goes back on the road in a moment — R resets it right now.')),
   );
   private readonly menuEl = h('div', { class: 'overlay dim', hidden: true });
   private readonly resultsEl = h('div', { class: 'overlay dim', hidden: true });
@@ -342,6 +468,7 @@ class RaceView {
     this.cam.zoom = this.track.spec.closed ? 7 : 4;
 
     this.createRace();
+    activeView = this;
 
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
@@ -363,8 +490,11 @@ class RaceView {
     if (this.trackImg) this.trackImg.canvas.width = this.trackImg.canvas.height = 0;
     if (this.skidCanvas) this.skidCanvas.width = this.skidCanvas.height = 0;
     this.race = null;
+    this.autopilotAi = null;
+    if (activeView === this) activeView = null;
     raceDebug.race = null;
     raceDebug.playerIndex = -1;
+    raceDebug.autopilotOn = false;
     this.el.remove();
   }
 
@@ -374,31 +504,25 @@ class RaceView {
     this.simError = null;
     raceDebug.error = null;
     this.hud.classList.remove('sim-off');
-    this.fallback = false;
+    this.autopilotAi = null;
+    raceDebug.autopilotOn = false;
     if (this.resultsTimer) {
       window.clearInterval(this.resultsTimer);
       this.resultsTimer = 0;
     }
     try {
       this.config = buildRaceConfig(this.session, this.pending);
-      try {
-        this.race = createRace(this.config);
-      } catch (err) {
-        // Race manager still a stub → UI-side free-run fallback with the real vehicle model.
-        if (!(err instanceof Error) || !/TODO/.test(err.message)) throw err;
-        this.race = createFallbackRace(this.config);
-        this.fallback = true;
-      }
+      this.race = createRace(this.config);
       this.playerIndex = this.race.cars.findIndex((c) => c.entry.driver.kind === 'player');
       raceDebug.race = this.race;
       raceDebug.playerIndex = this.playerIndex;
-      raceDebug.fallback = this.fallback;
     } catch (err) {
       this.race = null;
       this.showSimMissing(err);
       return;
     }
-    this.fallbackBanner.hidden = !this.fallback;
+    resetSeen();
+    perf.reset();
     const n = this.race.cars.length;
     this.prevWheel = new Float64Array(n * 8);
     this.prevValid = new Uint8Array(n * 4);
@@ -443,21 +567,15 @@ class RaceView {
     const msg = err instanceof Error ? err.message : String(err);
     this.simError = msg;
     raceDebug.error = msg;
-    const stub = /TODO/.test(msg);
+    console.error('simulation error:', err);
     this.hud.classList.add('sim-off');
     this.resultsEl.hidden = false;
     this.resultsEl.replaceChildren(
       h(
         'div',
         { class: 'results sim-missing' },
-        h('h2', null, stub ? 'Simulation not available yet' : 'Simulation error'),
-        h(
-          'p',
-          { class: 'sub' },
-          stub
-            ? 'The vehicle / race simulation modules are still stubs in this build, so the race cannot run. The garage, analysis and race setup work normally.'
-            : 'The simulation threw an error while running. The rest of the app is unaffected.',
-        ),
+        h('h2', null, 'Simulation error'),
+        h('p', { class: 'sub' }, 'The simulation threw an error while running. The rest of the app is unaffected — the garage, analysis and race setup keep working.'),
         h('pre', { class: 'mono small' }, msg),
         h(
           'div',
@@ -480,11 +598,18 @@ class RaceView {
   // ------------------------------------------------------------------ HUD
 
   private buildHud(): void {
+    for (let k = 0; k < 3; k++) {
+      const t = new Text('span', 'sec');
+      this.sectorText.push(t);
+      this.sectorCls.push(new ClassSwitch(t.el, 'sec'));
+      this.sectorsEl.appendChild(t.el);
+    }
     const tl = h(
       'div',
       { class: 'hud-panel hud-tl' },
       h('div', { class: 'hud-pos' }, this.posText.el, this.posOf.el),
       this.lapText.el,
+      this.sectorsEl,
       this.standingsEl,
     );
     const tr = h('div', { class: 'hud-tr' }, h('div', { class: 'hud-panel' }, this.minimap), h('div', { class: 'hud-panel' }, this.elevText.el));
@@ -534,7 +659,7 @@ class RaceView {
       this.bodyTel.el,
     );
 
-    this.hud.append(tl, tr, bc, br, hint, this.telemetryEl, this.fallbackBanner, this.msgText.el, this.countdownEl, this.wreckedEl, this.menuEl, this.resultsEl);
+    this.hud.append(tl, tr, bc, br, hint, this.telemetryEl, this.msgText.el, this.countdownEl, this.wreckedEl, this.menuEl, this.resultsEl);
     this.msgText.el.hidden = true;
     this.countdownEl.hidden = true;
   }
@@ -592,6 +717,7 @@ class RaceView {
         if (this.race && this.playerIndex >= 0) {
           try {
             this.race.resetCar(this.playerIndex);
+            this.autopilotAi?.reset?.();
           } catch (err) {
             this.showSimMissing(err);
           }
@@ -662,9 +788,71 @@ class RaceView {
     }
   }
 
+  /** Debug / demo: let an AI drive the player car (raceDebug.autopilot). */
+  setAutopilot(on: boolean): void {
+    const race = this.race;
+    this.autopilotAi = null;
+    raceDebug.autopilotOn = false;
+    if (!on || !race || this.playerIndex < 0) return;
+    const car = race.cars[this.playerIndex];
+    this.autopilotAi = createAiDriver(car.entry.spec, this.track, { skill: 0.85, aggression: 0.5, seed: 7 });
+    this.autopilotOthers = race.cars.filter((c) => c !== car).map((c) => c.state);
+    this.autoAcc = 0;
+    raceDebug.autopilotOn = true;
+  }
+
+  /** Debug / e2e: advance the race synchronously by `seconds` of simulated time (inputs still applied). */
+  advance(seconds: number): number {
+    const race = this.race;
+    if (!race) return NaN;
+    if (this.simError || !(seconds > 0)) return race.time;
+    const chunk = 4 * SIM_DT;
+    let remaining = seconds;
+    try {
+      while (remaining > 1e-9) {
+        const dt = Math.min(chunk, remaining);
+        this.stepRace(race, dt);
+        remaining -= dt;
+      }
+    } catch (err) {
+      this.showSimMissing(err);
+    }
+    return race.time;
+  }
+
+  /**
+   * One frame's worth of simulation. With the keyboard the whole `dt` goes to `race.step` (it substeps
+   * inside). With the autopilot the AI must see every substep — `AiDriver.drive` is written for
+   * race.ts's per-substep cadence and degrades badly when called every 2–4 substeps with the input held
+   * (dunes lap 1: 93 s per substep vs 118 s at 2 and 156 s at 4) — so the race is stepped SIM_DT at a
+   * time from a local accumulator, the driver asked before each substep.
+   */
+  private stepRace(race: Race, dt: number): void {
+    if (!this.autopilotAi) {
+      this.updateInput(dt);
+      race.step(dt);
+    } else {
+      this.autoAcc += dt;
+      let n = 0;
+      while (this.autoAcc >= SIM_DT - 1e-9 && n < MAX_SUBSTEPS_PER_FRAME) {
+        this.updateInput(SIM_DT);
+        race.step(SIM_DT);
+        this.autoAcc -= SIM_DT;
+        n++;
+      }
+      if (n >= MAX_SUBSTEPS_PER_FRAME) this.autoAcc = 0;
+    }
+    observe(race);
+  }
+
   private updateInput(dt: number): void {
     const race = this.race;
     if (!race || this.playerIndex < 0) return;
+    if (this.autopilotAi) {
+      const car = race.cars[this.playerIndex];
+      race.setPlayerInput(this.autopilotAi.drive(car.state, this.autopilotOthers, dt));
+      return;
+    }
     const k = this.keys;
     const left = k.has('ArrowLeft') || k.has('a');
     const right = k.has('ArrowRight') || k.has('d');
@@ -697,24 +885,28 @@ class RaceView {
 
   private readonly frame = (now: number): void => {
     this.rafId = requestAnimationFrame(this.frame);
-    let dt = (now - this.lastTime) / 1000;
+    const frameMs = now - this.lastTime;
+    let dt = frameMs / 1000;
     this.lastTime = now;
     if (!(dt > 0)) dt = 0;
     if (dt > MAX_FRAME_DT) dt = MAX_FRAME_DT; // slow-motion instead of a death spiral
     const race = this.race;
+    const t0 = performance.now();
     if (race && !this.paused && !this.simError) {
-      this.updateInput(dt);
       try {
-        race.step(dt);
+        this.stepRace(race, dt);
       } catch (err) {
         this.showSimMissing(err);
       }
     }
+    const t1 = performance.now();
     try {
       this.render(dt);
     } catch (err) {
       if (!this.simError) this.showSimMissing(err);
     }
+    const t2 = performance.now();
+    perf.record(frameMs, t1 - t0, t2 - t1);
     raceDebug.frames++;
   };
 
@@ -933,21 +1125,25 @@ class RaceView {
     const player = this.playerIndex >= 0 ? cars[this.playerIndex] : null;
     const leader = snap.order.length > 0 ? cars[snap.order[0]] : null;
 
-    // standings
+    // standings — race.ts order: finished cars first (by finish time), then running cars by progress
     for (let r = 0; r < snap.order.length && r < this.standingRows.length; r++) {
       const car = cars[snap.order[r]];
+      const tm = car.timing;
       let gap = '';
-      if (r === 0) gap = car.timing.finished ? fmtLap(car.timing.finishTime, 1) : car.timing.lastLapTime != null ? fmtLap(car.timing.lastLapTime, 1) : '';
+      if (r === 0) gap = tm.finished ? `✓ ${fmtLap(tm.finishTime, 1)}` : tm.lastLapTime != null ? fmtLap(tm.lastLapTime, 1) : `L${Math.min(tm.lap + 1, race.config.laps)}`;
       else if (leader) {
-        if (car.timing.finished && leader.timing.finished && car.timing.finishTime != null && leader.timing.finishTime != null) {
-          gap = `+${(car.timing.finishTime - leader.timing.finishTime).toFixed(1)}`;
+        if (tm.finished && leader.timing.finished && tm.finishTime != null && leader.timing.finishTime != null) {
+          gap = `+${(tm.finishTime - leader.timing.finishTime).toFixed(1)}`; // the race clock is shared: a real gap
         } else {
-          const dp = leader.timing.progress - car.timing.progress;
+          // still running: whole laps down, else a distance estimate at the leader's speed (race.ts leaves
+          // that to the UI; one reference speed keeps the gaps monotonic with the order)
+          const dp = leader.timing.progress - tm.progress;
           if (dp >= 1) gap = `+${Math.floor(dp)} lap${dp >= 2 ? 's' : ''}`;
-          else gap = `+${((dp * length) / Math.max(car.state.speed, 10)).toFixed(1)}`;
+          else if (dp > 0) gap = `+${((dp * length) / Math.max(leader.state.speed, 10)).toFixed(1)}`;
+          else gap = '+0.0';
         }
       }
-      this.standingRows[r].set(r + 1, car, gap, car.index === this.playerIndex);
+      this.standingRows[r].set(r + 1, car, gap, tm.resets ?? 0, car.index === this.playerIndex);
     }
 
     // player widgets
@@ -963,11 +1159,20 @@ class RaceView {
       } else {
         this.posText.set(rank > 0 ? `P${rank}` : '—');
       }
+      // race.ts: `lap` = completed laps; cars still behind the start line read progress = frac − 1 (< 0)
+      // and their first crossing starts lap 1; finished cars have frozen timing.
+      const closed = this.track.spec.closed;
+      const behindLine = closed && tm.progress < 0;
       const lapNo = Math.min(tm.lap + 1, totalLaps);
-      const curLap = snap.started ? snap.time - tm.lapStartTime : 0;
-      this.lapText.set(
-        `${this.track.spec.closed ? `Lap ${lapNo}/${totalLaps}` : 'Stage'} · ${fmtLap(curLap, 1)} · last ${fmtLap(tm.lastLapTime, 2)} · race ${fmtLap(snap.time, 1)}`,
-      );
+      const curLap = snap.started && !behindLine ? snap.time - tm.lapStartTime : 0;
+      if (tm.finished) {
+        this.lapText.set(`${closed ? `${totalLaps} lap${totalLaps === 1 ? '' : 's'} done` : 'Stage done'} · ${fmtLap(tm.finishTime, 2)} · best ${fmtLap(tm.bestLapTime, 2)}`);
+      } else {
+        this.lapText.set(
+          `${closed ? `Lap ${lapNo}/${totalLaps}` : 'Stage'}${behindLine ? ' · to the line' : ` · ${fmtLap(curLap, 1)}`} · last ${fmtLap(tm.lastLapTime, 2)} · race ${fmtLap(snap.time, 1)}`,
+        );
+      }
+      this.updateSectors(tm, snap, behindLine);
       this.speedText.set(String(Math.round(st.speed * 3.6)));
       this.gearText.set(st.shiftTimer > 0 ? '·' : gearLabel(st.gear));
       const lim = spec.engine.limiterRpm;
@@ -1049,24 +1254,53 @@ class RaceView {
     // minimap
     this.drawMinimap(race, snap);
 
-    // results
+    // results: shown when the player finishes (others may still be running → refreshed every 500 ms
+    // from raceSummary until the whole race is over) or when every car has finished.
     const playerDone = player ? player.timing.finished : false;
     if ((snap.finished || playerDone) && !this.resultsShown && this.pending.mode !== 'test') {
       this.resultsShown = true;
-      this.showResults(race, snap);
-      this.resultsTimer = window.setInterval(() => {
-        if (!this.race || !this.resultsShown) {
-          window.clearInterval(this.resultsTimer);
-          this.resultsTimer = 0;
-          return;
+      const done = this.showResults(race);
+      if (!done) {
+        this.resultsTimer = window.setInterval(() => {
+          if (!this.race || !this.resultsShown || this.showResults(this.race)) {
+            window.clearInterval(this.resultsTimer);
+            this.resultsTimer = 0;
+          }
+        }, 500);
+      }
+    }
+  }
+
+  /**
+   * Sector read-out (race.ts: three equal sectors by arc length; `sectors` holds the completed sectors
+   * of the current lap, `lastLapSectors` the three of the previous lap — used as the reference).
+   */
+  private updateSectors(tm: CarTiming, snap: RaceSnapshot, behindLine: boolean): void {
+    const ref = tm.lastLapSectors && tm.lastLapSectors.length === 3 ? tm.lastLapSectors : null;
+    const done = tm.finished && ref ? ref : tm.sectors;
+    const elapsed = snap.started ? snap.time - tm.lapStartTime : 0;
+    let acc = 0;
+    for (let k = 0; k < 3; k++) {
+      let txt: string;
+      let cls = '';
+      if (k < done.length && Number.isFinite(done[k])) {
+        const d = done[k];
+        acc += d;
+        txt = `S${k + 1} ${d.toFixed(1)}`;
+        if (ref && !tm.finished && Number.isFinite(ref[k])) {
+          const delta = d - ref[k];
+          txt += ` ${fmtDelta(delta, 1)}`;
+          cls = delta > 0.05 ? 'pos' : delta < -0.05 ? 'neg' : '';
         }
-        const s = this.race.snapshot();
-        this.showResults(this.race, s);
-        if (s.finished) {
-          window.clearInterval(this.resultsTimer);
-          this.resultsTimer = 0;
-        }
-      }, 500);
+      } else if (k === done.length && snap.started && !behindLine && !tm.finished) {
+        txt = `S${k + 1} ${Math.max(0, elapsed - acc).toFixed(1)}`;
+        cls = 'live';
+      } else {
+        txt = `S${k + 1} —`;
+        cls = 'idle';
+      }
+      this.sectorText[k].set(txt);
+      this.sectorCls[k].set(cls);
     }
   }
 
@@ -1192,38 +1426,38 @@ class RaceView {
     }
   }
 
-  private showResults(race: Race, snap: RaceSnapshot): void {
-    const cars = race.cars;
-    const winner = snap.order.length > 0 ? cars[snap.order[0]] : null;
-    const rows = snap.order.map((idx, r) => {
-      const c = cars[idx];
-      const t = c.timing;
-      let total: string;
-      if (t.finished && t.finishTime != null) {
-        total = r === 0 || !winner?.timing.finished || winner.timing.finishTime == null ? fmtLap(t.finishTime) : `+${(t.finishTime - winner.timing.finishTime).toFixed(3)}`;
-      } else {
-        const dp = winner ? winner.timing.progress - t.progress : 0;
-        total = dp >= 1 ? `+${Math.floor(dp)} lap${dp >= 2 ? 's' : ''}` : 'running…';
-      }
-      return h(
+  /** Results overlay straight from `raceSummary` (race.ts semantics). Returns true once every car has finished. */
+  private showResults(race: Race): boolean {
+    const snap = race.snapshot();
+    const summary = raceSummary(race);
+    const me = summary.find((row) => row.index === this.playerIndex) ?? null;
+    const rows = summary.map((row) =>
+      h(
         'tr',
-        { class: idx === this.playerIndex ? 'me' : '' },
-        h('td', null, String(r + 1)),
-        h('td', null, h('span', { class: 'sw', style: `display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;background:${c.entry.spec.color}` }), c.entry.name, idx === this.playerIndex ? ' (you)' : ''),
-        h('td', null, fmtLap(t.bestLapTime)),
-        h('td', null, total),
-      );
-    });
-    const player = this.playerIndex >= 0 ? cars[this.playerIndex] : null;
-    const rank = player ? snap.order.indexOf(player.index) + 1 : 0;
+        { class: row.index === this.playerIndex ? 'me' : '', dataset: { car: String(row.index), finished: String(row.finished) } },
+        h('td', null, String(row.position)),
+        h('td', null, h('span', { class: 'sw', style: `display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;background:${row.color}` }), row.name, row.index === this.playerIndex ? ' (you)' : ''),
+        h('td', null, String(row.laps)),
+        h('td', null, fmtLap(row.bestLapTime)),
+        h('td', null, row.total),
+        h('td', null, row.resets > 0 ? String(row.resets) : ''),
+      ),
+    );
+    const laps = race.config.laps;
+    const distance = this.track.spec.closed ? `${laps} lap${laps === 1 ? '' : 's'}` : 'stage';
     this.resultsEl.hidden = false;
     this.resultsEl.replaceChildren(
       h(
         'div',
         { class: 'results' },
-        h('h2', null, snap.finished ? 'Race finished' : player?.timing.finished ? `You finished P${rank}` : 'Results'),
-        h('div', { class: 'sub' }, `${this.track.spec.name} · ${race.config.laps} lap${race.config.laps === 1 ? '' : 's'}${snap.finished ? '' : ' · others still running'}`),
-        h('table', null, h('thead', null, h('tr', null, h('th', null, '#'), h('th', null, 'Car'), h('th', null, 'Best lap'), h('th', null, 'Total / gap'))), h('tbody', null, rows)),
+        h('h2', null, snap.finished ? 'Race finished' : me?.finished ? `You finished P${me.position}` : 'Results'),
+        h('div', { class: 'sub' }, `${this.track.spec.name} · ${distance}${snap.finished ? '' : ' · others still running'}`),
+        h(
+          'table',
+          null,
+          h('thead', null, h('tr', null, ['#', 'Car', 'Laps', 'Best lap', 'Total / gap', 'Resets'].map((t) => h('th', null, t)))),
+          h('tbody', null, rows),
+        ),
         h(
           'div',
           { class: 'buttons' },
@@ -1233,5 +1467,6 @@ class RaceView {
         ),
       ),
     );
+    return snap.finished;
   }
 }

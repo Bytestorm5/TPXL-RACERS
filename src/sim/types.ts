@@ -143,6 +143,13 @@ export interface TireOutput {
   utilisation: number;
   /** Power dissipated in slip (W) — drives heating and wear. */
   slipPower: number;
+  /**
+   * Optional (added by sim/tire.ts): the part of `slipPower` that heats the carcass, with the sliding
+   * speed of each axis saturated at `TIRE_HEAT_SLIP_SPEED_CAP` (a burnout or a locked wheel abrades
+   * and smokes rubber rather than soaking the whole tyre). `updateTireState` uses it when present and
+   * falls back to `slipPower` otherwise.
+   */
+  heatPower?: number;
 }
 
 export interface TireState {

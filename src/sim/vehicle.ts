@@ -928,6 +928,11 @@ function substep(spec: VehicleSpec, state: VehicleState, it: Internal, input: Dr
   const engineReflected = clutchSlip ? 0 : Math.max(eng.inertia, 0) * ratio * ratio;
   const iDriveExtra = nDriven > 0 ? (Math.max(dtr.inertia, 0) + engineReflected) / nDriven : 0;
   const iReactExtra = nDriven > 0 ? Math.max(dtr.inertia, 0) / nDriven : 0;
+  // The engine is pushing (positive engine torque through the gearbox, in either gear direction) as
+  // opposed to engine-braking. Needed by the torque balance: propulsive torque that opposes a slow
+  // creep (a hill start: the car rolls back a few cm/s while the driver floors it) must spin the wheel
+  // up in the drive direction, whereas engine-braking overload parks the tyre on the ellipse boundary.
+  const propulsive = tTotal * ratio > 0;
 
   const axleLock = [false, false];
   for (let axle = 0; axle < 2; axle++) {
@@ -1001,8 +1006,13 @@ function substep(spec: VehicleSpec, state: VehicleState, it: Internal, input: Dr
     const room = out0.longCapacity * roomFrac * LONG_ROOM_MARGIN;
     const kappaMax = w.peakKappa * roomFrac;
     const along = fdem * s;
+    // Drive torque against the direction of travel and stronger than the brake: the engine is
+    // reversing the wheel's motion (hill start while creeping back, or reverse gear while rolling
+    // forward) — a drive overload in the other direction, not engine braking. Without this the
+    // wheel was clamped to |vwx|/V_EPS of slip and could never spin up (hill-start deadlock).
+    const driveReversal = propulsive && w.tDrive * s < 0 && Math.abs(w.tDrive) > w.tBrake;
 
-    if (along < -room) {
+    if (along < -room && !driveReversal) {
       // Braking overload.
       const brakeDominated = w.tBrake >= Math.abs(w.tDrive) || w.tDrive * s > 0;
       if (br.abs && brakeDominated) {
@@ -1029,7 +1039,7 @@ function substep(spec: VehicleSpec, state: VehicleState, it: Internal, input: Dr
         w.brakePower = 0;
       }
       w.integrating = false;
-    } else if (w.integrating || w.diffSpin || along > room) {
+    } else if (w.integrating || w.diffSpin || along > room || driveReversal) {
       // Drive overload: integrate the wheel explicitly (wheelspin).
       w.kappa = clamp((omega * rad - w.vwx) / w.vRef, -1, 3);
       tyreEval(spec, it, ws[i], w, front);
@@ -1078,13 +1088,15 @@ function substep(spec: VehicleSpec, state: VehicleState, it: Internal, input: Dr
     };
     const roomNm = (roomOf(L) + roomOf(Rw)) * rad;
     const along = (T - s * tbSum) * s;
-    if (along < -roomNm) {
+    // See wheelBalance: propulsive torque against a slow creep spins the axle up, it is not braking.
+    const driveReversal = propulsive && T * s < 0 && Math.abs(T) > tbSum;
+    if (along < -roomNm && !driveReversal) {
       // Braking overload: each wheel locks / ABS-modulates on its own.
       wheelBalance(iL);
       wheelBalance(iR);
       return;
     }
-    if (L.integrating || Rw.integrating || L.diffSpin || Rw.diffSpin || along > roomNm) {
+    if (L.integrating || Rw.integrating || L.diffSpin || Rw.diffSpin || along > roomNm || driveReversal) {
       let fxSum = 0;
       for (const w of [L, Rw]) {
         w.kappa = clamp((om * rad - w.vwx) / w.vRef, -1, 3);

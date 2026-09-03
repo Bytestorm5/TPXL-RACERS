@@ -1,6 +1,6 @@
 /**
  * RACE SETUP screen (#/race): pick a track (minimap from compileTrack samples), your car,
- * laps, opponents and AI skill. Persists to racers.setup.v1.
+ * laps, opponents, AI skill and the warm-tyres option. Persists to racers.setup.v1.
  */
 import type { CarBuild } from '../design/types';
 import { clear, h } from './dom';
@@ -12,7 +12,9 @@ import { drawMinimap, SURFACE_LABEL, trackSurfaces } from './trackRender';
 export function mountRaceSetup(root: HTMLElement, session: Session, nav: Nav): Screen {
   const setup = session.setup;
   if (!session.findCar(setup.playerCarId)) setup.playerCarId = session.defaultPlayerCar().id;
-  if (setup.opponents.length === 0) setup.opponents = session.presets.slice(0, 5).map((p) => p.id);
+  setup.opponents = setup.opponents.filter((id) => session.findCar(id)).slice(0, MAX_OPPONENTS);
+  setup.aiSkill = Number.isFinite(setup.aiSkill) ? Math.max(0.3, Math.min(1, setup.aiSkill)) : 0.8;
+  if (typeof setup.preheatTyres !== 'boolean') setup.preheatTyres = true;
 
   const save = (): void => session.saveSetup();
 
@@ -95,6 +97,7 @@ export function mountRaceSetup(root: HTMLElement, session: Session, nav: Nav): S
   const oppList = h('div', { class: 'opp-list' });
   const oppCount = h('input', { type: 'range', min: 0, max: MAX_OPPONENTS, step: 1, value: setup.opponents.length, 'aria-label': 'Number of opponents' });
   const oppCountLabel = h('span', { class: 'mono' }, String(setup.opponents.length));
+  const gridNote = h('div', { class: 'field-hint', dataset: { role: 'grid-note' } });
   const renderOpponents = (): void => {
     clear(oppList);
     setup.opponents.forEach((id, i) => {
@@ -108,25 +111,57 @@ export function mountRaceSetup(root: HTMLElement, session: Session, nav: Nav): S
       );
       oppList.appendChild(h('div', { class: 'opp-row' }, h('span', { class: 'mono muted' }, `${i + 1}`), sel));
     });
+    const n = setup.opponents.length;
+    oppCountLabel.textContent = String(n);
+    if (oppCount.value !== String(n)) oppCount.value = String(n);
+    gridNote.textContent = n === 0 ? 'Solo run: just you and the clock.' : `${n + 1} cars on the grid (you start from the back, slot ${n + 1}).`;
+  };
+  /** Fill the line-up to n cars: the default spread first (skipping cars already in), then cycle the presets. */
+  const fillOpponents = (n: number): void => {
+    while (setup.opponents.length > n) setup.opponents.pop();
+    const defaults = session.defaultOpponents();
+    let k = 0;
+    while (setup.opponents.length < n) {
+      const fromDefaults = defaults.find((id) => !setup.opponents.includes(id));
+      const presets = session.presets;
+      setup.opponents.push(fromDefaults ?? presets[k++ % presets.length].id);
+    }
   };
   oppCount.addEventListener('input', () => {
-    const n = Math.round(Number(oppCount.value));
-    oppCountLabel.textContent = String(n);
-    while (setup.opponents.length > n) setup.opponents.pop();
-    while (setup.opponents.length < n) {
-      const presets = session.presets;
-      setup.opponents.push(presets[setup.opponents.length % presets.length].id);
-    }
+    fillOpponents(Math.max(0, Math.min(MAX_OPPONENTS, Math.round(Number(oppCount.value)) || 0)));
     renderOpponents();
     save();
   });
+  const defaultLineup = h(
+    'button',
+    { class: 'btn btn-small', type: 'button', dataset: { action: 'default-lineup' }, title: 'Club Hatch · Kei Racer · Muscle · Gravel Rally · Track Weapon', onclick: () => {
+      setup.opponents = session.defaultOpponents();
+      renderOpponents();
+      save();
+    } },
+    'Default line-up',
+  );
   renderOpponents();
 
   const skill = h('input', { type: 'range', min: 0.3, max: 1, step: 0.05, value: setup.aiSkill, 'aria-label': 'AI skill' });
   const skillLabel = h('span', { class: 'mono' }, setup.aiSkill.toFixed(2));
+  const skillNote = h('div', { class: 'field-hint' });
+  const describeSkill = (): void => {
+    const s = setup.aiSkill;
+    const usage = Math.round((0.8 + 0.17 * s) * 100);
+    skillNote.textContent = `${s >= 0.95 ? 'Flat out' : s >= 0.75 ? 'Quick' : s >= 0.5 ? 'Steady' : 'Cautious'}: the AI plans with ~${usage}% of the grip it estimates. Each opponent further down the line-up drives 2.5% more cautiously than the one before.`;
+  };
   skill.addEventListener('input', () => {
-    setup.aiSkill = Number(skill.value);
+    setup.aiSkill = Math.max(0.3, Math.min(1, Number(skill.value) || 0.8));
     skillLabel.textContent = setup.aiSkill.toFixed(2);
+    describeSkill();
+    save();
+  });
+  describeSkill();
+
+  const preheat = h('input', { type: 'checkbox', checked: setup.preheatTyres, 'aria-label': 'Warm tyres at start', dataset: { role: 'preheat' } });
+  preheat.addEventListener('change', () => {
+    setup.preheatTyres = preheat.checked;
     save();
   });
 
@@ -139,6 +174,7 @@ export function mountRaceSetup(root: HTMLElement, session: Session, nav: Nav): S
       playerCarId: setup.playerCarId,
       opponents: [...setup.opponents],
       aiSkill: setup.aiSkill,
+      preheatTyres: setup.preheatTyres,
     };
     save();
     nav(ROUTES.run);
@@ -159,14 +195,22 @@ export function mountRaceSetup(root: HTMLElement, session: Session, nav: Nav): S
         { class: 'field' },
         h('div', { class: 'field-head' }, h('label', null, 'Opponents'), oppCountLabel),
         oppCount,
+        gridNote,
         oppList,
+        defaultLineup,
       ),
       h(
         'div',
         { class: 'field' },
         h('div', { class: 'field-head' }, h('label', null, 'AI skill'), skillLabel),
         skill,
-        h('div', { class: 'field-hint' }, '1.0 uses ~97% of the estimated grip, 0.5 about 80%.'),
+        skillNote,
+      ),
+      h(
+        'div',
+        { class: 'field' },
+        h('label', { class: 'check' }, preheat, 'Warm tyres at start'),
+        h('div', { class: 'field-hint' }, 'Tyres and brakes start at working temperature (a formation-lap stand-in). Off: everything starts at ambient — cold slicks are treacherous on lap 1.'),
       ),
       h('button', { class: 'btn btn-primary btn-big', dataset: { action: 'start-race' }, onclick: start }, 'Start race'),
       h('p', { class: 'small muted' }, 'Keyboard: ↑/W throttle · ↓/S brake · ←→/A D steer · Space handbrake · E/Q shift · R reset · T telemetry · Esc pause'),

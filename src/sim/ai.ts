@@ -998,12 +998,15 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
   let hillStart = 0;
   let hillStarts = 0;
   let stuckFor = 0;
+  /** Throttle the speed controller asked for BEFORE traction control (stuck detection must not be blinded by the TC cut). */
+  let throttleDemand = 0;
 
   const reset = (): void => {
     recoverStuck = 0;
     hillStart = 0;
     hillStarts = 0;
     stuckFor = 0;
+    throttleDemand = 0;
     hintS = undefined;
     mode = 'normal';
     stuckTime = 0;
@@ -1146,6 +1149,13 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
   const anyDrivenSpinning = (state: VehicleState): boolean =>
     (driveF && (state.wheels[0].spinning || state.wheels[1].spinning)) || (driveR && (state.wheels[2].spinning || state.wheels[3].spinning));
 
+  /**
+   * Traction-control floor: on loose surfaces a spinning tyre keeps most of its grip
+   * (`slideRetention`), so cutting to 6 % throttle only strands the car on a gravel climb — a rally
+   * driver keeps the wheels turning. Asphalt 0.06, gravel 0.36, snow 0.41.
+   */
+  const tcFloor = (state: VehicleState): number => 0.06 + 0.5 * clamp01(state.road.surface.slideRetention);
+
   const drive = (state: VehicleState, others: ReadonlyArray<VehicleState>, dt: number): DriverInput => {
     const h = Number.isFinite(dt) && dt > 0 ? dt : 1 / 120;
     if (shiftCooldown > 0) shiftCooldown = Math.max(0, shiftCooldown - h);
@@ -1177,7 +1187,7 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
     gripScale += (gripScaleNow(state) - gripScale) * Math.min(1, h / 0.5);
 
     // --- mode management --------------------------------------------------------------------
-    if (!state.airborne && speed < 1.5 && lastThrottle > 0.3 && Math.abs(state.ax) < 1.0) stuckTime += h;
+    if (!state.airborne && speed < 1.5 && Math.max(lastThrottle, throttleDemand) > 0.3 && Math.abs(state.ax) < 1.0) stuckTime += h;
     else stuckTime = Math.max(0, stuckTime - 2 * h);
     const offTrackFar = Math.abs(lateral) > hw + 3;
     const spun = Math.abs(headingErr) > (120 * Math.PI) / 180 && !state.airborne;
@@ -1278,7 +1288,8 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
         hillStart -= h;
         return output(0, 1, steer);
       }
-      if (speed < 0.5 && lastThrottle > 0.2) recoverStuck += h;
+      throttleDemand = throttle;
+      if (speed < 0.5 && Math.max(lastThrottle, throttleDemand) > 0.2) recoverStuck += h;
       else recoverStuck = Math.max(0, recoverStuck - h);
       if (recoverStuck > 2 && hillStarts < 3) {
         hillStart = 0.6;
@@ -1295,7 +1306,7 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
         hillStarts = 0;
         return output(0, 1, 0);
       }
-      if (anyDrivenSpinning(state)) tcScale = Math.max(0.06, Math.min(tcScale, 1 - tcReduction) - 4 * h);
+      if (anyDrivenSpinning(state)) tcScale = Math.max(tcFloor(state), Math.min(tcScale, 1 - tcReduction) - 4 * h);
       else tcScale = Math.min(1, tcScale + 0.5 * h);
       throttle *= tcScale;
       targetSpeed = vTarget;
@@ -1389,9 +1400,10 @@ export function createAiDriver(spec: VehicleSpec, track: CompiledTrack, options:
     let brake = 0;
     if (e > -0.5) throttle = clamp(holdThrottle(speed, state.road.gradeAlong, state.road.surface) + 0.45 * e, 0, 1);
     else brake = clamp(-0.28 * e, 0, 1);
+    throttleDemand = throttle;
     // crude traction control: cut on the first spin, keep cutting while it lasts, recover slowly
-    // (slicks on cold gravel spin at a few % throttle — the floor must be low)
-    if (anyDrivenSpinning(state)) tcScale = Math.max(0.06, Math.min(tcScale, 1 - tcReduction) - 4 * h);
+    // (slicks on cold gravel spin at a few % throttle — the floor must be low on asphalt, see tcFloor)
+    if (anyDrivenSpinning(state)) tcScale = Math.max(tcFloor(state), Math.min(tcScale, 1 - tcReduction) - 4 * h);
     else tcScale = Math.min(1, tcScale + 0.5 * h);
     throttle *= tcScale;
     // slide catch: yawing much faster than the path needs, or a body slip angle beyond what this
