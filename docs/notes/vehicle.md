@@ -219,7 +219,13 @@ still steps.
   the wide/low variants still unloads briefly (lateral plus closed-throttle longitudinal transfer on
   25 kN/m springs) — the assertion is "no rollover", not "no lift". The bank comparison runs on a
   15° bowl with μ 1.0 tyres: μ 1.6 tyres deliver more than the bank's raised 1.3 g threshold, and a
-  flat "banked" plane turns into a grade as the car turns.
+  flat "banked" plane turns into a grade as the car turns. The tall car's mass / yaw inertia /
+  cgToFront are pinned (1600 kg, 2130 kg·m², 1.25 m) instead of following the default build: on the
+  bowl the car rides its outer wheels for ~4 s at relRoll ≈ 7–9° (the passing outcome is a two-wheel
+  balance, not four wheels down), and the 20 % lighter default body of the 2026-09-03 chassis re-mass
+  transient-oversteers on two wheels and goes over at every speed from 55 to 70 km/h — as does the
+  pinned body at 55 km/h. The scenario is on the tipping edge; a robust version needs a lower
+  lateral demand (less steer or a lower μ), which is a spec change, not a re-pin.
 - **r (tripping).** The car keeps rolling forward (no brakes, no engine braking through the slipping
   clutch); the assertion is that the sideways velocity is gone, no wreck, roll < 30°.
 - **s (speedbowl).** At rest on the 24° banking the struts carry m·g·cos(24°) = 0.914 m·g (loads act

@@ -19,7 +19,7 @@ default build and all seven presets, and for a build seeded with NaN/Infinity).
   limiter; positive part held at the idle value below idle; NaN-proof.
 - **`design/parts.ts`** — all ten tyre compounds, five chassis sizes, three materials, four pad
   compounds, `FIELD_RANGES` for all 35 continuous paths (novice-readable hints), `defaultBuild()`
-  (front-mid 2.5 L NA sport RWD mid-size, ~1597 kg, 53.6% front), `presetBuilds()` — Club Hatch,
+  (front-mid 2.5 L NA sport RWD mid-size, ~1397 kg, 54.1% front), `presetBuilds()` — Club Hatch,
   Track Weapon, Gravel Rally, Drift Missile, Muscle, Kei Racer, Ice Runner. Default and every
   preset are fixpoints of `normalizeBuild` (pinned by tests).
 - **`design/compile.ts`** — `compileBuild` (masses/CG/inertia, per-axle tyre & brake specs,
@@ -28,9 +28,15 @@ default build and all seven presets, and for a build seeded with NaN/Infinity).
 
 ## Calibration landed (compiled, incl. 80 kg driver + fuel)
 
-- Default 2.5 L sport RWD: 1597 kg, 53.6% front, 204 Nm, ~123 kW @ 6700.
-- Club Hatch 1.6 FWD: ~1335 kg, ~56% front. Muscle 6.2 V8: ~1990 kg, 616 Nm, ~311 kW.
-- Track Weapon (mid carbon, slicks): ~1219 kg, 42.8% front, liftAreaRear ≈ 2.5 m².
+- Default 2.5 L sport RWD: 1397 kg, 54.1% front, 204 Nm, ~123 kW @ 6700.
+- Club Hatch 1.6 FWD: ~1148 kg, ~57% front. Muscle 6.2 V8: ~1740 kg, 616 Nm, ~311 kW.
+- Track Weapon (mid carbon, slicks): ~1099 kg, 42.0% front, liftAreaRear ≈ 2.5 m².
+- `CHASSIS_SIZES.baseMass` was scaled by ~0.8 on 2026-09-03 (kei 620 → 500, compact 900 → 710,
+  mid 1080 → 880, large 1300 → 1050, truck 1800 → 1450) because the first calibration compiled
+  10–20 % over the design targets (hatch ~1335 kg vs ~1100 intended, default ~1597 vs ~1400). Nothing
+  else in compile changed. Side effect: with less chassis mass at 0.5 wb the engine lump weighs more
+  in the balance, so front-engine cars are ~1–1.5 points more nose-heavy and every balanced brake bias
+  moved 0.015–0.03 forward (presets re-tuned, see `docs/notes/analyze_autotune.md`).
 - Engine sanity pinned: 2.0 NA sport 190–230 Nm / 120–160 kW @ 6000–7000; 6.2 V8 street
   550–650 Nm / 300–360 kW.
 
@@ -81,7 +87,7 @@ default build and all seven presets, and for a build seeded with NaN/Infinity).
 - `TIRE_HEATING_BASE = 7e-4` °C/J matches the retuned `exampleTireSpec` calibration in
   `docs/notes/tire.md`; compound `heatingScale` spans 0.5 (drift) … 1.45 (slick_soft).
 - `optimalLoad` lands near the static corner load for road cars (default: 3512 N optimal vs
-  ~4190 N static front) — on the rising side of total force, per the tyre module's guidance.
+  ~3705 N static front) — on the rising side of total force, per the tyre module's guidance.
 - analyze/autotune: `FIELD_RANGES` is the search space (dotted paths into CarBuild;
   `INTEGER_FIELDS` lists the integer ones); `normalizeBuild` is idempotent and safe to call on
   anything; `compileBuild(build)` already includes it.

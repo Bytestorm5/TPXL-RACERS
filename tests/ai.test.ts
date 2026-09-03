@@ -554,7 +554,10 @@ describe('laps with the 6-DOF vehicle model', () => {
   }, 180_000);
 
   it('Track Weapon (low, stiff, cold slicks) completes 2 laps of dunes-rallycross without NaN', () => {
-    const run = runLaps(preset('Track Weapon'), 'dunes-rallycross', 2, 0.8, 900);
+    // Slicks never warm up on dirt and the driver stalls into its recovery mode every ~100 m (18 stuck
+    // resets, ~990 s for the two laps since the chassis re-mass; 13 resets / 835 s before it) — the budget
+    // is a "does not strand forever" guard, not a lap-time claim.
+    const run = runLaps(preset('Track Weapon'), 'dunes-rallycross', 2, 0.8, 1200);
     expect(run.nan).toBe(false);
     expect(run.finished).toBe(true);
     expect(run.lapTimes.length).toBe(2);

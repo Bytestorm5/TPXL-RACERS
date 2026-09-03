@@ -49,10 +49,10 @@ describe('compileBuild — determinism & sanity', () => {
 });
 
 describe('compileBuild — mass & weight distribution', () => {
-  it('default build: a ~1.6 t sports sedan, 52-56% front (front-engine RWD)', () => {
+  it('default build: a ~1.4 t sports coupe, 52-56% front (front-engine RWD)', () => {
     const spec = compileBuild(defaultBuild());
-    expect(spec.mass).toBeGreaterThan(1450);
-    expect(spec.mass).toBeLessThan(1700);
+    expect(spec.mass).toBeGreaterThan(1350);
+    expect(spec.mass).toBeLessThan(1450);
     const front = frontWeightFraction(spec);
     expect(front).toBeGreaterThanOrEqual(0.52);
     expect(front).toBeLessThanOrEqual(0.56);
@@ -74,14 +74,14 @@ describe('compileBuild — mass & weight distribution', () => {
   it('per-preset mass and balance sanity', () => {
     const byName = new Map(presetBuilds().map((p) => [p.name, compileBuild(p)]));
     const expectations: Array<[string, number, number, number, number]> = [
-      // name, minMass, maxMass, minFront, maxFront
-      ['Club Hatch', 1200, 1450, 0.52, 0.6],
-      ['Track Weapon', 1100, 1350, 0.4, 0.46],
-      ['Gravel Rally', 1300, 1550, 0.54, 0.62],
-      ['Drift Missile', 1500, 1750, 0.54, 0.62],
-      ['Muscle', 1800, 2150, 0.56, 0.63],
-      ['Kei Racer', 900, 1100, 0.52, 0.62],
-      ['Ice Runner', 1300, 1550, 0.52, 0.62],
+      // name, minMass, maxMass, minFront, maxFront (compiled with the 80 kg driver and the preset's fuel)
+      ['Club Hatch', 1100, 1200, 0.55, 0.6],
+      ['Track Weapon', 1050, 1150, 0.4, 0.45],
+      ['Gravel Rally', 1200, 1300, 0.56, 0.61],
+      ['Drift Missile', 1375, 1475, 0.57, 0.62],
+      ['Muscle', 1690, 1790, 0.6, 0.64],
+      ['Kei Racer', 825, 900, 0.56, 0.61],
+      ['Ice Runner', 1170, 1260, 0.56, 0.61],
     ];
     for (const [name, minM, maxM, minF, maxF] of expectations) {
       const spec = byName.get(name)!;
@@ -102,14 +102,14 @@ describe('compileBuild — mass & weight distribution', () => {
     const carbon = compileBuild(build((b) => (b.chassis.material = 'carbon')));
     expect(carbon.mass).toBeLessThan(alu.mass);
     expect(alu.mass).toBeLessThan(steel.mass);
-    // the mass delta is exactly the chassis share: 1080 × (1 − 0.66)
-    expect(steel.mass - carbon.mass).toBeCloseTo(1080 * 0.34, 6);
+    // the mass delta is exactly the chassis share: 880 × (1 − 0.66)
+    expect(steel.mass - carbon.mass).toBeCloseTo(880 * 0.34, 6);
   });
 
   it('weight reduction removes mass and lowers the CG', () => {
     const stock = compileBuild(build());
     const stripped = compileBuild(build((b) => (b.chassis.weightReduction = 1)));
-    expect(stripped.mass).toBeCloseTo(stock.mass - 0.15 * 1080, 6);
+    expect(stripped.mass).toBeCloseTo(stock.mass - 0.15 * 880, 6);
     expect(stripped.cgHeight).toBeCloseTo(stock.cgHeight - 0.02, 9);
   });
 

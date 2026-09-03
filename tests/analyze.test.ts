@@ -185,7 +185,7 @@ describe('brakes — bias bar, lockup sweep, thermal test', () => {
     expect(g(0.5)).toBeLessThan(best);
     expect(g(0.9)).toBeLessThan(best);
     expect(g(0.5)).toBeLessThan(g(0.7));
-    // bias-bar: the default's stock bias (0.705) is the front's share of the tyre capacity at the limit
+    // bias-bar: the default's stock bias (0.72) is the front's share of the tyre capacity at the limit
     const ideal = analyzeLockup(compileBuild(build()));
     expect(Math.abs(ideal.utilFront - ideal.utilRear)).toBeLessThan(0.05);
     expect(ideal.utilFront).toBeGreaterThanOrEqual(ideal.utilRear);

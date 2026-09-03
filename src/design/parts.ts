@@ -487,7 +487,7 @@ export const INTEGER_FIELDS: ReadonlySet<string> = new Set([
 
 /**
  * A sensible starting point: a front-mid-engine RWD mid-size 2.5 L sport-tuned coupe on
- * sport tyres — quick, balanced (~53–54% front) and forgiving (ABS, mild aero, 1-way LSD).
+ * sport tyres — quick, balanced (~54% front, ~1400 kg) and forgiving (ABS, mild aero, 1-way LSD).
  */
 export function defaultBuild(id?: string): CarBuild {
   return {
@@ -543,7 +543,7 @@ export function defaultBuild(id?: string): CarBuild {
       discFront: 320,
       discRear: 300,
       pads: 'sport',
-      bias: 0.705,
+      bias: 0.72,
       abs: true,
       ducts: 0.2,
     },
@@ -583,7 +583,7 @@ export function presetBuilds(): CarBuild[] {
       springFront: 40, springRear: 35, arbFront: 0.5, arbRear: 0.35,
       damperFront: 0.7, damperRear: 0.7, rideHeightFront: 110, rideHeightRear: 115, steeringLock: 40,
     },
-    brakes: { discFront: 300, discRear: 280, pads: 'sport', bias: 0.745, abs: true, ducts: 0.3 },
+    brakes: { discFront: 300, discRear: 280, pads: 'sport', bias: 0.765, abs: true, ducts: 0.3 },
     aero: { splitter: 0.3, wing: 0.3, underbody: 'flat', body: 'standard' },
   };
 
@@ -611,7 +611,7 @@ export function presetBuilds(): CarBuild[] {
       springFront: 90, springRear: 100, arbFront: 0.7, arbRear: 0.6,
       damperFront: 0.9, damperRear: 0.9, rideHeightFront: 70, rideHeightRear: 80, steeringLock: 34,
     },
-    brakes: { discFront: 380, discRear: 355, pads: 'race', bias: 0.635, abs: false, ducts: 0.8 },
+    brakes: { discFront: 380, discRear: 355, pads: 'race', bias: 0.63, abs: false, ducts: 0.8 },
     aero: { splitter: 0.8, wing: 0.9, underbody: 'diffuser', body: 'streamlined' },
   };
 
@@ -639,7 +639,7 @@ export function presetBuilds(): CarBuild[] {
       springFront: 25, springRear: 25, arbFront: 0.2, arbRear: 0.2,
       damperFront: 0.65, damperRear: 0.65, rideHeightFront: 200, rideHeightRear: 200, steeringLock: 45,
     },
-    brakes: { discFront: 300, discRear: 300, pads: 'sport', bias: 0.74, abs: false, ducts: 0.4 },
+    brakes: { discFront: 300, discRear: 300, pads: 'sport', bias: 0.755, abs: false, ducts: 0.4 },
     aero: { splitter: 0.1, wing: 0.3, underbody: 'none', body: 'standard' },
   };
 
@@ -667,7 +667,7 @@ export function presetBuilds(): CarBuild[] {
       springFront: 55, springRear: 50, arbFront: 0.5, arbRear: 0.3,
       damperFront: 0.8, damperRear: 0.75, rideHeightFront: 100, rideHeightRear: 110, steeringLock: 55,
     },
-    brakes: { discFront: 330, discRear: 310, pads: 'sport', bias: 0.72, abs: false, ducts: 0.3 },
+    brakes: { discFront: 330, discRear: 310, pads: 'sport', bias: 0.735, abs: false, ducts: 0.3 },
     aero: { splitter: 0.2, wing: 0.4, underbody: 'flat', body: 'standard' },
   };
 
@@ -695,7 +695,7 @@ export function presetBuilds(): CarBuild[] {
       springFront: 50, springRear: 45, arbFront: 0.4, arbRear: 0.3,
       damperFront: 0.6, damperRear: 0.6, rideHeightFront: 130, rideHeightRear: 130, steeringLock: 36,
     },
-    brakes: { discFront: 340, discRear: 320, pads: 'street', bias: 0.745, abs: true, ducts: 0.1 },
+    brakes: { discFront: 340, discRear: 320, pads: 'street', bias: 0.775, abs: true, ducts: 0.1 },
     aero: { splitter: 0, wing: 0, underbody: 'none', body: 'boxy' },
   };
 
@@ -723,7 +723,7 @@ export function presetBuilds(): CarBuild[] {
       springFront: 28, springRear: 26, arbFront: 0.35, arbRear: 0.25,
       damperFront: 0.7, damperRear: 0.7, rideHeightFront: 110, rideHeightRear: 110, steeringLock: 42,
     },
-    brakes: { discFront: 240, discRear: 240, pads: 'sport', bias: 0.745, abs: true, ducts: 0.2 },
+    brakes: { discFront: 240, discRear: 240, pads: 'sport', bias: 0.765, abs: true, ducts: 0.2 },
     aero: { splitter: 0.2, wing: 0.3, underbody: 'flat', body: 'standard' },
   };
 
@@ -751,7 +751,7 @@ export function presetBuilds(): CarBuild[] {
       springFront: 22, springRear: 22, arbFront: 0.15, arbRear: 0.15,
       damperFront: 0.6, damperRear: 0.6, rideHeightFront: 170, rideHeightRear: 175, steeringLock: 45,
     },
-    brakes: { discFront: 280, discRear: 280, pads: 'street', bias: 0.725, abs: true, ducts: 0.1 },
+    brakes: { discFront: 280, discRear: 280, pads: 'street', bias: 0.745, abs: true, ducts: 0.1 },
     aero: { splitter: 0, wing: 0.1, underbody: 'none', body: 'standard' },
   };
 

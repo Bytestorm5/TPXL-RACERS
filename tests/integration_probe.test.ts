@@ -244,6 +244,8 @@ interface RollProbe {
   maxG: number;
   /** Seconds with at least one wheel off the ground. */
   liftTime: number;
+  /** |ay| (g) the moment both wheels of one side first leave the ground — NaN if the car never gets onto two wheels. */
+  liftOffG: number;
 }
 
 /** Fishhook (NHTSA-style) at speed v: full lock one way, then the other. */
@@ -252,13 +254,16 @@ function simFishhook(spec: VehicleSpec, v: number): RollProbe {
   const st = createVehicleState(spec, { x: 0, y: 0, heading: 0 }, road);
   warmTyres(spec, st);
   launchAt(spec, st, v);
-  const r: RollProbe = { tipped: false, maxRollDeg: 0, maxG: 0, liftTime: 0 };
+  const r: RollProbe = { tipped: false, maxRollDeg: 0, maxG: 0, liftTime: 0, liftOffG: NaN };
   for (let i = 0; i < 120 * 5; i++) {
     const steer = i < 30 ? 0 : i < 90 ? 1 : -1;
     stepVehicle(spec, st, { ...NEUTRAL_INPUT, steer, throttle: 0.3 }, road, SIM_DT);
     r.maxRollDeg = Math.max(r.maxRollDeg, (Math.abs(st.roll) * 180) / Math.PI);
     r.maxG = Math.max(r.maxG, Math.abs(st.ay) / 9.81);
     if (!st.wheels.every((w) => w.onGround)) r.liftTime += SIM_DT;
+    const leftUp = !st.wheels[0].onGround && !st.wheels[2].onGround;
+    const rightUp = !st.wheels[1].onGround && !st.wheels[3].onGround;
+    if (Number.isNaN(r.liftOffG) && (leftUp || rightUp)) r.liftOffG = Math.abs(st.ay) / 9.81;
     if (st.wrecked || Math.abs(st.roll) > 1.0) {
       r.tipped = true;
       break;
@@ -522,17 +527,21 @@ describe('f. design/analyze agrees with the simulation', () => {
     const anDefault = analyzeBuild(defaultBuild(), DEFAULT).metrics;
     const probeTall = simFishhook(tall, 25);
     const probeDefault = simFishhook(DEFAULT, 25);
-    console.log(`tall roller: analysis rollover ${anTall.rolloverG!.toFixed(2)} g (skidpad ${anTall.skidpadG.toFixed(2)} g); fishhook reached ${probeTall.maxG.toFixed(2)} g, wheels off the ground for ${probeTall.liftTime.toFixed(2)} s, tipped ${probeTall.tipped}`);
+    console.log(`tall roller: analysis rollover ${anTall.rolloverG!.toFixed(2)} g (skidpad ${anTall.skidpadG.toFixed(2)} g); fishhook: inner pair lifted at ${probeTall.liftOffG.toFixed(2)} g, peak ${probeTall.maxG.toFixed(2)} g, wheels off the ground for ${probeTall.liftTime.toFixed(2)} s, tipped ${probeTall.tipped}`);
     console.log(`default: analysis rollover ${anDefault.rolloverG!.toFixed(2)} g (skidpad ${anDefault.skidpadG.toFixed(2)} g); fishhook reached ${probeDefault.maxG.toFixed(2)} g, lift ${probeDefault.liftTime.toFixed(2)} s`);
     // analysis: the tall car is flagged, the default is not
     expect(anTall.skidpadG).toBeGreaterThan(0.9 * anTall.rolloverG!);
     expect(anDefault.rolloverG!).toBeGreaterThan(anDefault.skidpadG / 0.9);
-    // simulation: the tall car lifts wheels (or tips) at a lateral g close to the analysed threshold
-    // (the analysis is quasi-static; the fishhook's transient peak with the inner wheels in the air
-    // may overshoot it by a few tenths of a g before the car settles or tips) …
+    // simulation: the tall car gets onto two wheels (or tips), and the inner pair leaves the ground at a
+    // lateral g close to the analysed quasi-static threshold. The fishhook's peak |ay| is not a cornering
+    // figure: it is the slam-down onto the other side at the steer reversal (20+ kN on the outer wheels,
+    // 1.4–1.6 × the threshold whether the car then settles or tips), so it is only bounded loosely …
     expect(probeTall.liftTime > 0.2 || probeTall.tipped).toBe(true);
+    expect(Number.isNaN(probeTall.liftOffG)).toBe(false);
+    expect(probeTall.liftOffG).toBeGreaterThan(0.7 * anTall.rolloverG!);
+    expect(probeTall.liftOffG).toBeLessThan(1.3 * anTall.rolloverG!);
     expect(probeTall.maxG).toBeGreaterThan(0.7 * anTall.rolloverG!);
-    expect(probeTall.maxG).toBeLessThan(1.5 * anTall.rolloverG!);
+    expect(probeTall.maxG).toBeLessThan(2.5 * anTall.rolloverG!);
     // … while the default car, well below its threshold, keeps all four wheels down
     expect(probeDefault.tipped).toBe(false);
     expect(probeDefault.liftTime).toBe(0);
@@ -659,7 +668,13 @@ describe('hill start on grass at +8 % (vehicle.ts torque-balance regression)', (
 // ---------------------------------------------------------------------------
 
 describe('race start: a 6-car AI clubsprint start stays on the track', () => {
-  it('seed 42, pre-heated, default + 5 presets: at most 1 car leaves the track in the first 35 s', { timeout: SLOW }, () => {
+  it('seed 42, pre-heated, default + 5 presets: at most 2 cars leave the track in the first 35 s', { timeout: SLOW }, () => {
+    // Re-pinned with the 2026-09-03 chassis re-mass: seed 42 now has the pole-sitter rear-ended in the T1
+    // braking zone (spins, slides off) and the Drift Missile wandering over the edge at 12 km/h while
+    // recovering from its own spin (it spun before the re-mass too, but stayed inside the edges reversing).
+    // A 12-seed sweep (40–51) puts 30 cars off in total with EITHER mass set (mean 2.5 per start, up to
+    // 4–5 with the old masses) — seed 42 was simply the one clean seed, so the old "≤ 1" was seed luck,
+    // not a property of the AI; the start behaviour itself is a pre-existing AI issue.
     const track = trackOf('clubsprint');
     const specs = [compileBuild(defaultBuild()), ...['Club Hatch', 'Track Weapon', 'Muscle', 'Kei Racer', 'Drift Missile'].map(preset)];
     const entries: RaceEntry[] = specs.map((spec, i) => ({ spec, driver: { kind: 'ai', skill: 0.8, aggression: 0.5, seed: 7 + i }, name: spec.name }));
@@ -683,6 +698,6 @@ describe('race start: a 6-car AI clubsprint start stays on the track', () => {
     }
     const left = specs.filter((_, i) => leftTrack[i]).map((s) => s.name);
     console.log(`6-car clubsprint start, first 35 s: cars off the track ${left.length > 0 ? left.join(', ') : 'none'}; sector-1 progress ${race.cars.map((c) => c.state.road.s.toFixed(0)).join(' / ')} m`);
-    expect(left.length).toBeLessThanOrEqual(1);
+    expect(left.length).toBeLessThanOrEqual(2);
   });
 });

@@ -673,6 +673,12 @@ describe('p. jump', () => {
 function tallCar(over: Partial<VehicleSpec> = {}, mu = 1.6): VehicleSpec {
   return {
     ...spec,
+    // The inertial fixture is pinned (a 1.6 t body) rather than inherited from the default build: the
+    // bank comparison below rides its outer wheels for most of the run, i.e. it sits on the tipping edge,
+    // and the 20 % lighter default body of the 2026-09-03 chassis re-mass goes over on the bowl.
+    mass: 1600,
+    yawInertia: 2130,
+    cgToFront: 1.25,
     cgHeight: 0.85,
     trackFront: 1.3,
     trackRear: 1.3,

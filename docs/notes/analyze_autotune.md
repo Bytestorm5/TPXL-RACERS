@@ -87,7 +87,7 @@ quantities and search numerically against `compileBuild` — none re-derives a c
   rear/front utilisation = 0.98 (2 % toward the front for safety; 1.0 for `drift`). One grid step is
   ~2 % of the rear torque near 0.75, so both grid neighbours of the root are evaluated and a *balanced*
   one is kept (front-first preferred). Under the bias-bar semantics the result is the dynamic front
-  capacity share at the limit: 0.70–0.75 for the road-car presets, 0.635 for the low, rear-heavy Track
+  capacity share at the limit: 0.72–0.78 for the road-car presets, 0.63 for the low, rear-heavy Track
   Weapon; it does not depend on disc sizes (tested).
 - **gears** — `overallTop = limiter × r / (1.04 × v_drag)`, `overallFirst = 1.25 × cap_0.5g × r /
   (peakTorque × eff)` (at least 1.8 × overallTop); the final drive is moved only when needed to put
@@ -106,9 +106,11 @@ quantities and search numerically against `compileBuild` — none re-derives a c
   match the front to the fixed underbody rear. No wing and no splitter → untouched.
 - **camber** — 0.9 × the compound's `optimalCamberDeg`. **dampers** — 0.70 / 0.65.
 - **all** — pressures, camber, aero, gears, balance, brakeBias, dampers, brakeBias. Idempotent on the
-  default and all presets (second run: 0 changes); on random builds a second run changes ≤ 4 fields
-  (grid snapping). Novice test: 20 seeds × every continuous field uniform in `FIELD_RANGES` → 20/20
-  without a danger warning.
+  default and all presets but the Drift Missile (second run: 0 changes; the Drift Missile re-snaps
+  splitter, final drive and both bars by one slider step each — the aero total feeds the gears' drag
+  limit which feeds the balance); on random builds a second run changes ≤ 4 fields (grid snapping).
+  Novice test: 20 seeds × every continuous field uniform in `FIELD_RANGES` → 20/20 without a danger
+  warning.
 
 ## Limitations / assumptions (for docs/ASSUMPTIONS.md)
 
@@ -131,16 +133,36 @@ by the coordinator; the vehicle model implements the same rule). `FIELD_RANGES['
 0.5–0.9 in 0.005 steps and every curated build carries the value `autoTune(build, 'brakeBias')`
 produces, so the presets are balanced out of the box:
 
-| Build | old bias | new bias | note |
+| Build | old bias (prop. valve) | bias bar, first calibration | bias bar, current | note |
+| --- | --- | --- | --- | --- |
+| Roadster S (default) | 0.64 | 0.705 | 0.72 | balanced, front first by 2 % |
+| Club Hatch | 0.68 | 0.745 | 0.765 | |
+| Track Weapon | 0.60 | 0.635 | 0.63 | balanced (low CG, 42 % front: little transfer) |
+| Gravel Rally | 0.60 | 0.74 | 0.755 | |
+| Drift Missile | 0.70 | 0.72 | 0.735 | balanced would be 0.755; 0.02 rearward on purpose (rear locks first → warning, not danger) |
+| Muscle | 0.66 | 0.745 | 0.775 | |
+| Kei Racer | 0.66 | 0.745 | 0.765 | |
+| Ice Runner | 0.60 | 0.725 | 0.745 | |
+
+### Chassis re-mass (2026-09-03)
+
+`CHASSIS_SIZES.baseMass` was scaled by ~0.8 (kei 620 → 500, compact 900 → 710, mid 1080 → 880,
+large 1300 → 1050, truck 1800 → 1450) so the compiled cars land on their design targets. With less
+chassis mass sitting at mid-wheelbase, the engine lump counts for more in the balance: front-engine
+cars are ~1–1.5 points more nose-heavy, so every balanced bias moved 0.015–0.03 forward. The
+"current" column above is `autoTune(build, 'brakeBias')` re-run on the lighter cars (rounded to the
+0.005 slider step); the Drift Missile stays 0.02 rearward of its balanced 0.755.
+
+| Build | mass before | mass after | front % before → after |
 | --- | --- | --- | --- |
-| Roadster S (default) | 0.64 | 0.705 | balanced, front first by 2 % |
-| Club Hatch | 0.68 | 0.745 | |
-| Track Weapon | 0.60 | 0.635 | balanced (low CG, 43 % front: little transfer) |
-| Gravel Rally | 0.60 | 0.74 | |
-| Drift Missile | 0.70 | 0.72 | balanced would be 0.74; 0.02 rearward on purpose (rear locks first → warning, not danger) |
-| Muscle | 0.66 | 0.745 | |
-| Kei Racer | 0.66 | 0.745 | |
-| Ice Runner | 0.60 | 0.725 | |
+| Roadster S (default) | 1597 kg | 1397 kg | 53.6 → 54.1 |
+| Club Hatch | 1335 kg | 1148 kg | 56.3 → 57.4 |
+| Track Weapon | 1219 kg | 1099 kg | 42.8 → 42.0 |
+| Gravel Rally | 1438 kg | 1252 kg | 57.6 → 58.7 |
+| Drift Missile | 1624 kg | 1427 kg | 58.3 → 59.5 |
+| Muscle | 1990 kg | 1740 kg | 60.4 → 61.9 |
+| Kei Racer | 982 kg | 865 kg | 57.6 → 58.6 |
+| Ice Runner | 1403 kg | 1213 kg | 57.1 → 58.2 |
 
 ## Open issues for the integrator
 

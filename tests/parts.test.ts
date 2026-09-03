@@ -116,11 +116,11 @@ describe('TIRE_COMPOUNDS', () => {
 
 describe('CHASSIS_SIZES / CHASSIS_MATERIALS / BRAKE_PADS', () => {
   it('chassis sizes match the physical catalogue', () => {
-    expect(CHASSIS_SIZES.kei).toMatchObject({ wheelbase: 2.4, track: 1.35, baseMass: 620, frontalArea: 1.9, cgHeight: 0.5 });
-    expect(CHASSIS_SIZES.compact).toMatchObject({ wheelbase: 2.55, track: 1.5, baseMass: 900 });
-    expect(CHASSIS_SIZES.mid).toMatchObject({ wheelbase: 2.7, track: 1.56, baseMass: 1080 });
-    expect(CHASSIS_SIZES.large).toMatchObject({ wheelbase: 2.9, track: 1.62, baseMass: 1300 });
-    expect(CHASSIS_SIZES.truck).toMatchObject({ wheelbase: 3.2, track: 1.7, baseMass: 1800, cgHeight: 0.75 });
+    expect(CHASSIS_SIZES.kei).toMatchObject({ wheelbase: 2.4, track: 1.35, baseMass: 500, frontalArea: 1.9, cgHeight: 0.5 });
+    expect(CHASSIS_SIZES.compact).toMatchObject({ wheelbase: 2.55, track: 1.5, baseMass: 710 });
+    expect(CHASSIS_SIZES.mid).toMatchObject({ wheelbase: 2.7, track: 1.56, baseMass: 880 });
+    expect(CHASSIS_SIZES.large).toMatchObject({ wheelbase: 2.9, track: 1.62, baseMass: 1050 });
+    expect(CHASSIS_SIZES.truck).toMatchObject({ wheelbase: 3.2, track: 1.7, baseMass: 1450, cgHeight: 0.75 });
   });
 
   it('materials: carbon < aluminium < steel in mass', () => {
@@ -214,7 +214,7 @@ describe('defaultBuild', () => {
     expect(b.engine.aspiration).toBe('na');
     expect(b.tires.front.compound).toBe('sport');
     expect(b.brakes.abs).toBe(true);
-    expect(b.brakes.bias).toBeCloseTo(0.705, 9); // balanced under the bias-bar semantics (autoTune output)
+    expect(b.brakes.bias).toBeCloseTo(0.72, 9); // balanced under the bias-bar semantics (autoTune output)
     expect(b.drivetrain.rearDiff).toBe('lsd_1way');
     expect(b.drivetrain.gearbox).toBe('auto');
   });
@@ -275,7 +275,7 @@ describe('presetBuilds', () => {
     expect(drift.tires.rear.compound).toBe('drift');
     expect(drift.suspension.steeringLock).toBeGreaterThanOrEqual(50);
     expect(drift.brakes.abs).toBe(false);
-    expect(drift.brakes.bias).toBeCloseTo(0.72, 9); // 0.02 more rearward than balanced (0.74): drift cars like a loose rear
+    expect(drift.brakes.bias).toBeCloseTo(0.735, 9); // 0.02 more rearward than balanced (0.755): drift cars like a loose rear
 
     const muscle = byName.get('Muscle')!;
     expect(muscle.chassis.size).toBe('large');

@@ -44,8 +44,9 @@ append to the relevant section when you simplify something. (Merged from every m
   (−0.05 / −0.04 lift-area factors). Lowering the car reduces drag (±5 %), the opposite of the
   original brief's sign.
 - `compileBuild` normalises first: an out-of-range build silently compiles to its clamped self.
-- Compiled cars are 10–20 % heavier than their design targets (Club Hatch ~1335 kg, default
-  ~1597 kg); `CHASSIS_SIZES.baseMass` is still to be re-tuned downward (integration backlog).
+- `CHASSIS_SIZES.baseMass` was re-tuned downward by ~0.8 (2026-09-03) so compiled cars land on
+  their design targets (Club Hatch ~1148 kg, default ~1397 kg); the presets' brake bias was
+  re-solved for the lighter, slightly more nose-heavy cars.
 
 ## Tyres
 - Single contact-patch model, no relaxation length, no transient slip: forces respond instantly to
