@@ -27,7 +27,10 @@ export interface TireCompoundData {
   slideMuRatio: number;
   optimalTemp: number;
   tempWindow: number;
+  /** Grip kept far below the window (glassy rubber). */
   coldGripFloor: number;
+  /** Grip kept far above the window (greasy rubber): much gentler than cold; slicks blister earliest. */
+  hotGripFloor: number;
   heatingScale: number;
   /** Multiplier on the cooling rate: thick slick tread holds its heat, a thin road tyre sheds it. */
   coolingScale: number;
@@ -83,6 +86,7 @@ export const TIRE_COMPOUNDS: Record<TireCompoundId, TireCompoundData> = {
     optimalTemp: 60,
     tempWindow: 45,
     coldGripFloor: 0.75,
+    hotGripFloor: 0.82,
     heatingScale: 1.0,
     coolingScale: 1.1,
     wearScale: 0.4,
@@ -107,6 +111,7 @@ export const TIRE_COMPOUNDS: Record<TireCompoundId, TireCompoundData> = {
     optimalTemp: 70,
     tempWindow: 35,
     coldGripFloor: 0.65,
+    hotGripFloor: 0.8,
     heatingScale: 1.0,
     coolingScale: 1.0,
     wearScale: 0.7,
@@ -131,6 +136,7 @@ export const TIRE_COMPOUNDS: Record<TireCompoundId, TireCompoundData> = {
     optimalTemp: 80,
     tempWindow: 30,
     coldGripFloor: 0.6,
+    hotGripFloor: 0.76,
     heatingScale: 1.1,
     coolingScale: 1.0,
     wearScale: 1.2,
@@ -155,6 +161,7 @@ export const TIRE_COMPOUNDS: Record<TireCompoundId, TireCompoundData> = {
     optimalTemp: 85,
     tempWindow: 24,
     coldGripFloor: 0.5,
+    hotGripFloor: 0.74,
     heatingScale: 0.95,
     coolingScale: 0.8,
     wearScale: 1.8,
@@ -179,6 +186,7 @@ export const TIRE_COMPOUNDS: Record<TireCompoundId, TireCompoundData> = {
     optimalTemp: 92,
     tempWindow: 20,
     coldGripFloor: 0.45,
+    hotGripFloor: 0.72,
     heatingScale: 1.0,
     coolingScale: 0.75,
     wearScale: 3.0,
@@ -203,6 +211,7 @@ export const TIRE_COMPOUNDS: Record<TireCompoundId, TireCompoundData> = {
     optimalTemp: 100,
     tempWindow: 16,
     coldGripFloor: 0.4,
+    hotGripFloor: 0.7,
     heatingScale: 1.15,
     coolingScale: 0.7,
     wearScale: 6.0,
@@ -227,6 +236,7 @@ export const TIRE_COMPOUNDS: Record<TireCompoundId, TireCompoundData> = {
     optimalTemp: 65,
     tempWindow: 40,
     coldGripFloor: 0.7,
+    hotGripFloor: 0.8,
     heatingScale: 1.1,
     coolingScale: 1.0,
     wearScale: 1.2,
@@ -251,6 +261,7 @@ export const TIRE_COMPOUNDS: Record<TireCompoundId, TireCompoundData> = {
     optimalTemp: 75,
     tempWindow: 30,
     coldGripFloor: 0.6,
+    hotGripFloor: 0.76,
     heatingScale: 1.2,
     coolingScale: 1.0,
     wearScale: 1.3,
@@ -275,6 +286,7 @@ export const TIRE_COMPOUNDS: Record<TireCompoundId, TireCompoundData> = {
     optimalTemp: 40,
     tempWindow: 35,
     coldGripFloor: 0.8,
+    hotGripFloor: 0.72,
     heatingScale: 0.9,
     coolingScale: 1.0,
     wearScale: 1.4,
@@ -299,6 +311,7 @@ export const TIRE_COMPOUNDS: Record<TireCompoundId, TireCompoundData> = {
     optimalTemp: 70,
     tempWindow: 60,
     coldGripFloor: 0.75,
+    hotGripFloor: 0.85,
     heatingScale: 0.7,
     coolingScale: 1.0,
     wearScale: 0.8,

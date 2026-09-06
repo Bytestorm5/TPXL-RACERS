@@ -2,8 +2,8 @@
 
 Design cars from **real physical parameters** — then race them together.
 
-RACERS is a browser game about the feeling of building a car and finding out what it actually does
-on track. There are no abstract "handling: 74/100" stats anywhere in the game. Every choice you make
+RACERS is a game — in the browser or as a desktop app — about the feeling of building a car and
+finding out what it actually does on track, rendered in 3D. There are no abstract "handling: 74/100" stats anywhere in the game. Every choice you make
 in the garage — tyre compound and pressure, brake disc size and pad compound, spring rates, gearing,
 turbo boost, wing angle, where the engine sits — becomes a term in the simulation:
 
@@ -28,22 +28,36 @@ for the car you built.
 
 ```bash
 npm install
-npm run dev        # dev server → http://localhost:5173
-npm test           # simulation test suite (the physics spec) + UI smoke tests
+npm run dev        # browser dev server → http://localhost:5173
+npm test           # simulation test suite (the physics spec) + renderer geometry + UI smoke tests
 npm run build      # typecheck + production build into dist/
 npm run preview    # serve dist/ (http://localhost:4173)
-node tests/e2e/ui_check.mjs   # browser drive-through with the real race (headless Chromium, see below)
+npm run e2e        # browser drive-through with the real race (headless Chromium, see below)
+
+npm run desktop:dev    # desktop app against the dev server (Electron)
+npm run desktop:start  # build everything and run the desktop app
+npm run desktop:dist   # package installers into release/ (win nsis/zip · mac dmg/zip · linux AppImage/tar.gz)
 ```
 
-The app is plain TypeScript + Vite + Canvas 2D with zero runtime dependencies; Node 22. The e2e
-script needs a Chromium binary (`/opt/pw-browsers/chromium` or `$CHROMIUM_PATH`); it builds, serves
-`vite preview --port 4174 --strictPort`, clicks through the garage and race setup, races on
-Clubsprint and Dunes Rallycross and fails on any console error. Screenshots land in `scratch/shots/`.
+TypeScript + Vite; the 3D race view uses three.js (the only runtime dependency — the simulation and
+the design layer have none); Node 22. The desktop app is an Electron shell around the same build:
+saves live as JSON files in the app's user-data folder and you can drop your own track files in its
+`tracks/` folder (`docs/TRACK_FORMAT.md`, *Loading your own tracks*). The e2e script needs a Chromium
+binary (`/opt/pw-browsers/chromium` or `$CHROMIUM_PATH`); it builds, serves `vite preview --port 4174
+--strictPort`, clicks through the garage and race setup, races on Clubsprint and Dunes Rallycross with
+WebGL on SwiftShader and fails on any console error. Screenshots land in `scratch/shots/`.
+`.github/workflows/ci.yml` runs the tests and build on every push and packages the desktop app on
+tags (unsigned unless signing secrets are configured).
 
 ## How to play
 
 1. **Garage** (`#/garage`) — pick a preset (Roadster S, Club Hatch, Track Weapon, Gravel Rally, Drift
-   Missile, Muscle, Kei Racer, Ice Runner) or your own car. Every slider re-runs the analysis: 0–100,
+   Missile, Muscle, Kei Racer, Ice Runner) or your own car. A 3D showroom shows the car as built
+   (wider tyres, ride height, the wing and the colour update live; drag to orbit) next to the charts
+   of the tab you are on — corner weights and load transfer, torque and power, wheel force per gear,
+   the tyre temperature window and load sensitivity, ride frequencies, brake fade and lockup vs
+   bias, drag and downforce. The configuration is split into tabs below. Every slider
+   re-runs the analysis: 0–100,
    top speed, skidpad g next to the g at which the car *rolls over*, braking distance and which axle
    locks first, brake temperature after ten stops, jump-landing load, downforce, the understeer
    gradient, an **estimated lap** on Clubsprint and Ridgeway (racing-line + speed-profile estimate,
@@ -55,7 +69,10 @@ Clubsprint and Dunes Rallycross and fails on any console error. Screenshots land
    lap with this car), your car, laps, 0–7 opponents (the *Default line-up* is a performance spread of
    the presets), the AI skill and **Warm tyres at start** (on by default: tyres and brakes begin at
    working temperature — switch it off and cold slicks make lap 1 an adventure).
-3. **Race** (`#/race/run`) — you start from the back of the grid; 3 s countdown with the field held
+3. **Race** (`#/race/run`) — rendered in 3D: the road built from the track's own geometry (banking,
+   crests, curbs, the start-line checker), rolling terrain, marker posts, cars sized from their
+   builds, skid marks, dust on loose surfaces, and four cameras (C: chase · hood · overhead ·
+   trackside). You start from the back of the grid; 3 s countdown with the field held
    on the brakes, then the race clock starts for everyone. The HUD shows position and standings (gap
    to the leader, laps down, reset count), lap and sector times with deltas to your previous lap,
    delta to your best lap this session,
@@ -68,6 +85,9 @@ Clubsprint and Dunes Rallycross and fails on any console error. Screenshots land
 
 *Quick race* on the landing page is your current car against five presets, 3 laps of Clubsprint.
 
+Units: the top bar switches between **Auto** (follows your locale: US → mph, °F, lb, in, psi),
+**Metric** and **Imperial**; the cars themselves are always stored in SI.
+
 ## Keyboard
 
 | Key | Action |
@@ -78,11 +98,20 @@ Clubsprint and Dunes Rallycross and fails on any console error. Screenshots land
 | E / Shift, Q / Ctrl | shift up / down (manual gearbox only; automatics shift for you) |
 | R | reset onto the nearest centreline pose (zero speed, upright; counted as a reset) |
 | T | telemetry panel: per-wheel utilisation, load, slip angle/ratio, temperature, ground contact, strut travel, brake/drive torque; body ax/ay/yaw rate/pitch/roll/z/vz/air time |
-| + / − (= / _) | zoom |
+| C | camera: chase → hood → overhead → trackside |
+| + / − (= / _) | camera distance |
 | P | pause (no menu) |
 | Esc | pause menu: resume / restart / race setup / garage / quit |
+| F11 (desktop) | full screen |
 
-Garage and setup are ordinary focusable DOM: Tab / Enter / Space work on car and track cards.
+**Controllers and steering wheels** (*Input* in the top bar): Xbox / PlayStation pads work out of
+the box (left stick steers, triggers drive and brake, X handbrake, bumpers shift, Y camera, Back
+reset, Start menu, rumble on impacts and lockups). Wheels get a preset (Logitech G29 / G920 / G923,
+Thrustmaster, Fanatec) and a **setup wizard** that learns the wheel axis, each pedal's rest and
+full-travel values (inverted pedals just work), paddles, buttons and an H-pattern shifter; steering
+rotation range, dead zone and linearity are adjustable and everything is saved per device. The
+keyboard keeps working alongside. Force feedback is not available through the browser's Gamepad
+API. Garage and setup are ordinary focusable DOM: Tab / Enter / Space work on car and track cards.
 
 ## Tracks
 
@@ -110,7 +139,10 @@ input, telemetry, pause, reset and the results table, an 8-car race for the fram
 Gravel Rally run on Dunes Rallycross with the cars airborne over the tabletop. See
 `docs/notes/ui.md` for the measured numbers.
 
-- **Camera** is north-up and translate-only (no heading-up rotation); zoom with + / −.
+- **Art** is procedural (boxes sized from the build, generated terrain, no trackside objects beyond
+  posts and the gantry) and there are **no physical barriers** — leaving the road is grass/gravel,
+  leaving the world is a reset. glTF car models and authored decor are the natural next steps.
+- **Desktop installers** are unsigned until signing secrets are configured in CI.
 - **Gaps between running cars** are a distance ÷ leader-speed estimate; only finished cars have exact
   gaps (shared race clock). Sectors are equal thirds of the lap by arc length, not authored splits.
 - **AI race starts** were tidied late in development (launch traction control, reduced pack

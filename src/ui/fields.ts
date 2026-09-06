@@ -310,6 +310,25 @@ export const SECTIONS: SectionDesc[] = [
   },
 ];
 
+/** Editor tabs: which sections each shows (the charts per tab live in garage.ts). */
+export interface TabDesc {
+  id: string;
+  title: string;
+  /** Section ids from SECTIONS, in order. */
+  sections: string[];
+  area: BuildWarning['area'];
+}
+
+export const TABS: TabDesc[] = [
+  { id: 'chassis', title: 'Chassis', sections: ['chassis'], area: 'chassis' },
+  { id: 'engine', title: 'Engine', sections: ['engine'], area: 'engine' },
+  { id: 'drivetrain', title: 'Drivetrain', sections: ['drivetrain'], area: 'drivetrain' },
+  { id: 'tyres', title: 'Tyres', sections: ['tiresFront', 'tiresRear'], area: 'tires' },
+  { id: 'suspension', title: 'Suspension', sections: ['suspension'], area: 'suspension' },
+  { id: 'brakes', title: 'Brakes', sections: ['brakes'], area: 'brakes' },
+  { id: 'aero', title: 'Aero', sections: ['aero'], area: 'aero' },
+];
+
 /** Paths whose change invalidates explicit gear ratios (they are derived from these). */
 export const GEAR_SHAPE_PATHS: ReadonlySet<string> = new Set(['drivetrain.gears', 'drivetrain.firstGear', 'drivetrain.topGear']);
 

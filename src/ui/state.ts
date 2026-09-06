@@ -5,10 +5,59 @@
 import { normalizeBuild } from '../design/compile';
 import { defaultBuild, presetBuilds } from '../design/parts';
 import type { CarBuild } from '../design/types';
-import { compileTrack, type CompiledTrack } from '../sim/track';
+import { compileTrack, validateTrack, type CompiledTrack } from '../sim/track';
 import type { TrackSpec } from '../sim/trackTypes';
 import { BUILTIN_TRACKS } from '../tracks/index';
-import { isBestFile, isCarsFile, isSetupFile, KEYS, loadJson, saveJson, type SetupFile } from './storage';
+import { desktop } from './desktop';
+import { isBestFile, isCarsFile, isPrefsFile, isSetupFile, KEYS, loadJson, saveJson, type SetupFile } from './storage';
+import { setUnitPreference, unitPreference, type UnitPreference } from './units';
+
+/** A user track file as loaded from the desktop tracks folder (docs/TRACK_FORMAT.md). */
+export interface UserTrack {
+  file: string;
+  spec: TrackSpec | null;
+  /** Why it was rejected (parse error, validation errors, duplicate id); null when loaded. */
+  error: string | null;
+}
+
+/** Structural guard before validateTrack sees the object. */
+export function isTrackSpecLike(v: unknown): v is TrackSpec {
+  if (typeof v !== 'object' || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return o.format === 1 && typeof o.id === 'string' && typeof o.name === 'string' && typeof o.closed === 'boolean' && Array.isArray(o.segments) && typeof o.defaultWidth === 'number';
+}
+
+/**
+ * Turn the desktop bridge's raw file list into loadable specs: parse errors and validation errors are
+ * reported per file, ids must be unique and must not shadow a built-in track.
+ */
+export function loadUserTracks(files: Array<{ file: string; spec?: unknown; error?: string }>, builtin: TrackSpec[] = BUILTIN_TRACKS): UserTrack[] {
+  const seen = new Set(builtin.map((t) => t.id));
+  const out: UserTrack[] = [];
+  for (const f of files) {
+    if (f.error) {
+      out.push({ file: f.file, spec: null, error: f.error });
+      continue;
+    }
+    if (!isTrackSpecLike(f.spec)) {
+      out.push({ file: f.file, spec: null, error: 'not a RACERS track (format 1 with id, name, closed, defaultWidth, segments)' });
+      continue;
+    }
+    const spec = f.spec;
+    if (seen.has(spec.id)) {
+      out.push({ file: f.file, spec: null, error: `duplicate track id "${spec.id}"` });
+      continue;
+    }
+    const errors = validateTrack(spec).filter((i) => i.level === 'error');
+    if (errors.length > 0) {
+      out.push({ file: f.file, spec: null, error: errors.map((e) => (e.segmentIndex !== undefined ? `segment ${e.segmentIndex}: ${e.message}` : e.message)).join('; ') });
+      continue;
+    }
+    seen.add(spec.id);
+    out.push({ file: f.file, spec, error: null });
+  }
+  return out;
+}
 
 export interface RaceSetup {
   trackId: string;
@@ -49,8 +98,13 @@ export class Session {
   pending: PendingRace | null = null;
   private best: Record<string, number> = {};
   private readonly trackCache = new Map<string, CompiledTrack>();
+  /** User tracks from the desktop tracks folder (empty in the browser). */
+  userTracks: UserTrack[] = [];
+  /** The folder the desktop shell scans, for the setup screen ('' in the browser). */
+  userTracksDir = '';
 
   constructor() {
+    this.reloadUserTracks();
     const saved = loadJson(KEYS.cars, isCarsFile);
     if (saved) {
       this.cars = saved.cars.map((c) => normalizeBuild(c));
@@ -69,6 +123,21 @@ export class Session {
 
     const best = loadJson(KEYS.best, isBestFile);
     if (best) this.best = { ...best.best };
+
+    const prefs = loadJson(KEYS.prefs, isPrefsFile);
+    setUnitPreference(prefs?.units ?? 'auto');
+  }
+
+  // ---------------------------------------------------------------- prefs
+
+  get units(): UnitPreference {
+    return unitPreference();
+  }
+
+  /** Display units ('auto' follows the locale); persisted in racers.prefs.v1. */
+  setUnits(p: UnitPreference): void {
+    setUnitPreference(p);
+    saveJson(KEYS.prefs, { format: 1, units: p });
   }
 
   // ---------------------------------------------------------------- cars
@@ -121,12 +190,35 @@ export class Session {
 
   // --------------------------------------------------------------- tracks
 
+  /** Built-in tracks first, then the loadable user tracks. */
   get trackSpecs(): TrackSpec[] {
-    return BUILTIN_TRACKS;
+    const user = this.userTracks.filter((t): t is UserTrack & { spec: TrackSpec } => t.spec !== null).map((t) => t.spec);
+    return user.length > 0 ? [...BUILTIN_TRACKS, ...user] : BUILTIN_TRACKS;
+  }
+
+  hasTrack(id: string): boolean {
+    return this.trackSpecs.some((t) => t.id === id);
   }
 
   trackSpec(id: string): TrackSpec {
-    return BUILTIN_TRACKS.find((t) => t.id === id) ?? BUILTIN_TRACKS.find((t) => t.id === DEFAULT_TRACK_ID) ?? BUILTIN_TRACKS[0];
+    const all = this.trackSpecs;
+    return all.find((t) => t.id === id) ?? all.find((t) => t.id === DEFAULT_TRACK_ID) ?? all[0];
+  }
+
+  /** Re-scan the desktop tracks folder (no-op in the browser). Returns the number of loadable tracks. */
+  reloadUserTracks(): number {
+    const d = desktop();
+    if (!d) return 0;
+    try {
+      const { dir, files } = d.tracks.list();
+      this.userTracksDir = dir;
+      this.userTracks = loadUserTracks(files);
+    } catch (err) {
+      console.warn('user tracks unavailable:', err);
+      this.userTracks = [];
+    }
+    for (const id of [...this.trackCache.keys()]) if (!BUILTIN_TRACKS.some((t) => t.id === id)) this.trackCache.delete(id);
+    return this.userTracks.filter((t) => t.spec).length;
   }
 
   getTrack(id: string): CompiledTrack {
@@ -162,7 +254,7 @@ export class Session {
   private sanitizeSetup(s: SetupFile): RaceSetup {
     const d = this.defaultSetup();
     return {
-      trackId: BUILTIN_TRACKS.some((t) => t.id === s.trackId) ? s.trackId : d.trackId,
+      trackId: this.hasTrack(s.trackId) ? s.trackId : d.trackId,
       laps: Number.isFinite(s.laps) ? Math.max(1, Math.min(50, Math.round(s.laps))) : d.laps,
       playerCarId: this.findCar(s.playerCarId) ? s.playerCarId : d.playerCarId,
       opponents: s.opponents.filter((id) => this.findCar(id)).slice(0, MAX_OPPONENTS),

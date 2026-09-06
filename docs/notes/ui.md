@@ -1,6 +1,7 @@
 # Notes — UI (`index.html`, `src/ui/**`)
 
-Vanilla TypeScript + DOM + Canvas 2D, no framework. Dark motorsport theme (`#101216`, one accent
+Vanilla TypeScript + DOM, no framework; the race view and the garage showroom are three.js
+(`src/render3d/`, see `docs/notes/render3d.md`); the minimap is Canvas 2D. Dark motorsport theme (`#101216`, one accent
 `#ff7a1a`, monospace numbers). Fully playable with the keyboard. Runs on the **real** simulation
 (`src/sim/race.ts`, `src/sim/ai.ts`, `src/sim/vehicle.ts`); the temporary free-run fallback
 (`src/ui/devRace.ts`) is gone. Quality gates at the time of writing: `npx tsc --noEmit` clean,
@@ -17,12 +18,18 @@ src/ui/storage.ts     version-guarded localStorage (try/catch + shape validators
 src/ui/dom.ts         h(), Text/Bar/ClassSwitch (write-on-change), toast(), modal()
 src/ui/format.ts      fmtLap / fmtDelta / fmtStep / humanizePath
 src/ui/landing.ts     #/            title, Garage / Quick race / Race setup, how-it-works
-src/ui/garage.ts      #/garage      car list · build editor · live analysis + charts + warnings + auto-tune + estimated lap
-src/ui/fields.ts        editor descriptors: sections, discrete options; continuous fields come from FIELD_RANGES
-src/ui/charts.ts        engine torque/power vs rpm; wheel force per gear vs speed + drag + traction line
+src/ui/garage.ts      #/garage      car list · [showroom | charts of the active tab] · tabbed editor · analysis + warnings + auto-tune + estimated lap
+src/ui/fields.ts        editor descriptors: sections, discrete options, TABS (which sections each tab shows); continuous fields come from FIELD_RANGES
+src/ui/charts.ts        generic line/bar plotters + one chart set per tab (corner weights, load transfer, engine, gears, tyre temperature window, tyre load, ride frequency, brake fade, lockup vs bias, aero)
+src/ui/units.ts         display units (metric / imperial / auto from the locale): conversions, garage field mapping, text localisation
 src/ui/raceSetup.ts   #/race        track cards (minimaps), car, laps, opponents (default line-up), AI skill, warm tyres
-src/ui/raceView.ts    #/race/run    fixed-step loop, camera, car rendering, skid marks, HUD, sectors, telemetry, overlays, results (raceSummary)
-src/ui/trackRender.ts   offscreen track raster (once) + polyline minimap
+src/ui/raceView.ts    #/race/run    fixed-step loop, RaceScene (3D), keyboard + gamepad input, HUD, minimap, sectors, telemetry, overlays, results (raceSummary)
+src/ui/input/profile.ts   device profiles (pure): presets, pedal / steer mapping math, H-pattern pulses, storage shape
+src/ui/input/manager.ts   polls every gamepad / wheel per frame → InputFrame; edges; rumble; connect toasts; racers.input.v1
+src/ui/input/settings.ts  #/input  devices, raw axis/button view, profile editor, setup wizard, live mapped-action panel
+src/ui/trackRender.ts   polyline minimap + its world→canvas transform (setup cards and the race HUD)
+src/ui/desktop.ts       the Electron bridge's shape (window.racersDesktop), null in the browser
+src/render3d/*          the 3D view (docs/notes/render3d.md)
 src/ui/style.css
 tests/ui_smoke.test.ts  node-side: field coverage, storage validators, race-config builder, defaults, formatting
 tests/e2e/ui_check.mjs  Playwright drive-through with the real race (not wired into vitest): node tests/e2e/ui_check.mjs
@@ -31,6 +38,22 @@ tests/e2e/ui_check.mjs  Playwright drive-through with the real race (not wired i
 **Router.** `location.hash` → `route()`: unmount the current screen, mount the new one. Unknown hashes
 land on the landing page. A screen that throws while mounting shows an error panel instead of a blank page.
 `body.in-race` hides the top bar on the race screen.
+
+**Garage layout.** Main column: the 3D showroom (top-left) beside the charts of the active tab
+(top-right; one chart fills the height, two stack), then the tab strip (chassis · engine ·
+drivetrain · tyres · suspension · brakes · aero, a warning dot per tab) and the active tab's fields.
+All panes are in the DOM (inactive ones `hidden`) so slider selectors keep working; the active tab
+is remembered for the session. `TAB_CHARTS` in garage.ts maps tabs to chart drawers; every chart
+plots the same sim/analysis functions the knobs feed (`tireTempFactor`, `tirePeakMu`, `cornerLoads`,
+`brakeEffectiveness`, `analyzeLockup`, `aeroForcesInto`, `wheelTorqueCurve`). The analysis column
+(summary, metrics, balance bars, auto-tune, warnings) is unchanged on the right.
+
+**Units.** `src/ui/units.ts`: 'auto' (locale region US / LR / MM → imperial), 'metric', 'imperial';
+persisted as `racers.prefs.v1`, toggled in the top bar (the screen re-mounts on change). Sliders stay
+SI; the number box beside each slider shows and accepts display units (`fieldUnits`: kg→lb, mm→in,
+kPa→psi, bar→psi, N/mm→lb/in). Metrics, HUD (speed, temperatures, ride height, telemetry), charts
+and the setup cards convert at the display boundary; analysis sentences go through `localizeText`
+(regex over km/h, °C, kg, kW, Nm, kPa, mm, m, "0–100").
 
 **Garage data flow.** Every control change → `edit(mutate)` → `normalizeBuild` → `session.updateCar`
 (debounced save 250 ms) → `compileBuild` → `analyzeBuild` → metrics/warnings/charts refresh →
@@ -64,17 +87,15 @@ AI skill 0.3–1 is clamped on load; each opponent further down the line-up gets
 (floor 0.3) so the field spreads out. Names are de-duplicated ("Club Hatch 2") because the standings
 key rows by `RaceCar.index` and show names. Total cars ≤ 8 (`MAX_OPPONENTS = 7`).
 
-**Race render layers** (back → front): (1) track raster — the whole track drawn once to an offscreen
-canvas in world coordinates through a y-flipped transform, scale = min(8 px/m, fits 6000 px, ≤ 22 Mpx);
-per-sample quads by surface, shoulder band (7 m), lanes (curbs striped red/white by `s`), edge lines,
-centre dash, contours every 5 m of `z`, lightness × (1 + 0.35·tanh(grade)), bank as a lightness
-gradient across the width (higher edge lighter), start/finish checker; (2) skid-mark raster (same
-origin, ≤ 4 px/m, persistent; a segment is drawn when a wheel is on the ground and locked / spinning /
-utilisation > 0.98; skipped with > 6 cars); (3) cars in a world transform (translate-only north-up
-camera with exponential follow, zoom +/−): rounded body, cabin, heading triangle, wheels steered by
-`WheelState.steer`, brake-light glow, player outline, impact flash from `lastImpact > 500 N·s`; vertical
-DOF: `lift = z − road.z − cgHeight` (≥ 0.35 m when `airborne`) scales the body up to +12 % and offsets
-a soft shadow, `roll` shears/offsets the body, `pitch` shortens it slightly; (4) DOM HUD.
+**Race rendering.** `RaceScene` (src/render3d/scene.ts) owns the WebGL canvas: terrain, road mesh,
+decor, one `CarMesh` per car, skid ribbons, dust and the camera rig; `raceView` calls
+`scene.update(race, snap, playerIndex, dt, time)` then `scene.render()` each frame (dt 0 while paused,
+so the picture freezes) and draws the DOM HUD and the 2D minimap (`drawMinimap` + `minimapTransform`
+for the car dots) on top. Cars are posed from `VehicleState` (position, heading/pitch/roll, steer,
+wheel spin, strut compression); brake lights from the input; the impact flash from `lastImpact`. If
+WebGL is unavailable the race still runs on the HUD with a message (`raceDebug.error` starts with
+`renderer:`). Cameras: C cycles chase / hood / top / tv, +/− scale the distance; `raceDebug.cameraMode`
+and `setCamera()` expose it to the e2e; `renderStats()` reports draw calls, triangles and the GPU.
 
 **Race semantics shown by the HUD** (all from `race.ts`, see `docs/notes/race.md`):
 
@@ -106,7 +127,17 @@ once per frame. HUD text is written through `Text` (compares with the last strin
 decays first), throttle ramps 4/s, brake 6/s, release 10/s; handbrake is instant; shifts are one-frame
 pulses (the vehicle model latches edges, so several sub-steps see the same `true` safely) and are
 suppressed when `spec.drivetrain.autoShift`. `R` calls `race.resetCar(playerIndex)`. Keys are
-released on `window.blur`.
+released on `window.blur`. Controllers and steering wheels (`input/`): `inputManager.poll()` once per
+frame maps every connected device through its profile and hands the race the frame of the device in
+use; its analogue steer replaces the keyboard ramp while off-centre, pedals take the max of device
+and keyboard, paddle edges shift, an H-pattern selection pulses the sequential edges toward the
+chosen gear one step per frame (`gearPulse`; reverse via neutral, as the vehicle model requires),
+camera / reset / menu buttons act on their edges. Rumble on pads with an actuator: a thump on
+`lastImpact`, a buzz while a wheel is locked or spinning at speed. Wheels' force feedback is not
+reachable from the Gamepad API (documented limitation). Profiles: presets for Logitech G29/G920,
+Thrustmaster, Fanatec and standard-mapping pads; the wizard on the Input screen learns a wheel's
+axes (rest / full raw values per pedal, so inverted pedals need no option) and buttons. The
+keyboard always works alongside.
 
 ## Debug / e2e hook (`window.__racers`)
 
@@ -134,7 +165,8 @@ released on `window.blur`.
 | E / Shift, Q / Ctrl | shift up / down (manual gearbox only) |
 | R | reset onto the nearest centreline pose (counted in `timing.resets`) |
 | T | telemetry panel (per-wheel utilisation, load, slip, temp, ground contact, compression, torques; body ax/ay/yaw/pitch/roll/z/vz/air time) |
-| + / −  (= / _) | zoom |
+| C | camera (chase / hood / top / tv) |
+| + / −  (= / _) | camera distance |
 | P | pause (no menu) |
 | Esc | pause menu: resume / restart / race setup / garage / quit |
 
@@ -147,9 +179,12 @@ Garage and setup are plain focusable DOM (tab / enter / space work on car and tr
 | `racers.cars.v1` | `{ format: 1, cars: CarBuild[], selectedId }` — every build is re-normalised on load |
 | `racers.setup.v1` | `{ format: 1, trackId, laps, playerCarId, opponents: string[], aiSkill, preheatTyres? }` |
 | `racers.best.v1` | `{ format: 1, best: { "<trackId>|<carId>": seconds } }` |
+| `racers.prefs.v1` | `{ format: 1, units: 'auto' | 'metric' | 'imperial' }` |
+| `racers.input.v1` | `{ format: 1, profiles: { "<gamepad id>": InputProfile }, primary? }` |
 
 All reads go through `loadJson(key, validator)`: parse failure or shape mismatch removes the key and
-falls back to defaults. Writes are try/catch (quota / private mode).
+falls back to defaults. Writes are try/catch (quota / private mode). In the desktop shell the same
+keys are JSON files under the app's user-data folder (`docs/notes/desktop.md`).
 
 ## Browser verification status (Playwright, headless Chromium 1440×900, real simulation)
 
@@ -249,8 +284,8 @@ opponents Club Hatch / Kei Racer / Muscle / Gravel Rally / Track Weapon on grid 
 - Delta-to-best compares against the best lap of the *session* (progress-binned times); the persisted
   record is time-only. Standings gaps are distance / current speed estimates until cars finish.
 - Test drive (garage) is a 99-lap free run: no results overlay by design; Esc → menu to leave.
-- The camera is translate-only north-up (as briefed); a heading-up option would be a small addition
-  (`ctx.rotate` before the car pass and a rotated `drawLayer`).
+- The e2e runs WebGL on SwiftShader (≈ 8 fps → slow motion; waits are scaled ×3 on the low preset);
+  a GPU runner would restore the real-time numbers above.
 - The autopilot is debug-only (no key binding); it would make a cheap "demo mode".
 - `race.ts` does not call `car.ai.reset?.()` after it re-poses an AI car (wreck / off-world watchdog); the
   UI does for the autopilot on `R`. Harmless so far (the driver's recovery logic copes) but worth a look.

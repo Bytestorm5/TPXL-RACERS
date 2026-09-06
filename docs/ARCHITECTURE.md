@@ -1,7 +1,8 @@
 # RACERS — architecture
 
-RACERS is a browser game (TypeScript, Vite, Canvas 2D, Vitest; no frameworks) about **designing cars
-from physical parameters and racing them together**. The pitch: the approachability of a garage full
+RACERS is a game (TypeScript, Vite, three.js for the 3D race view, Vitest; no frameworks; runs in the
+browser and as an Electron desktop app) about **designing cars from physical parameters and racing
+them together**. The pitch: the approachability of a garage full
 of sliders, but every slider changes a real term in the simulation. A "rally car" or "track car" is
 not a category — it is what falls out of the parts you chose.
 
@@ -25,10 +26,19 @@ src/sim/      Pure, deterministic, DOM-free. Fixed step 120 Hz.
               ai.ts        speed-profile planner + pure-pursuit driver
               race.ts      cars + drivers + timing + collisions + fixed-step loop
 
-src/ui/       Garage (designer), track select, race view (canvas + HUD), results. Vanilla DOM.
+src/render3d/ The 3D view (three.js): sim→three frame mapping, road mesh + terrain from the compiled
+              track, procedural cars from the VehicleSpec, skid marks, dust, cameras, garage showroom.
+              Reads VehicleState / CompiledTrack only; never a CarBuild, never writes to the sim.
+src/ui/       Garage (designer), track select, race screen (3D canvas + DOM HUD + minimap), results.
+              Vanilla DOM. storage.ts has one backend interface (localStorage / desktop files).
 src/tracks/   Track JSON files in the v1 format (docs/TRACK_FORMAT.md).
+electron/     Desktop shell: main process (window, menu, JSON-file saves, user tracks folder) and
+              the preload bridge. scripts/desktop-*.mjs build/run it; electron-builder.yml packages it.
 tests/        Vitest. Physics scenario tests are the spec: lockup, fade, banked turns, balance…
-docs/         ARCHITECTURE (this), TRACK_FORMAT, DESIGN_MODEL (build→spec formulas), ASSUMPTIONS.
+              render3d.test.ts pins the frame mapping and proves the road mesh sits on the sim's road.
+tests/e2e/    Playwright drive-through of the built app in headless Chromium (software WebGL).
+docs/         ARCHITECTURE (this), TRACK_FORMAT, DESIGN_MODEL (build→spec formulas), ASSUMPTIONS,
+              notes/ (per module; render3d.md and desktop.md for the view and the shell).
 ```
 
 ## Rules of the road for contributors (human or agent)
@@ -43,6 +53,10 @@ docs/         ARCHITECTURE (this), TRACK_FORMAT, DESIGN_MODEL (build→spec form
    simplify, write it down there.
 7. **Contracts in `types.ts`, `trackTypes.ts`, `design/types.ts` are frozen** during parallel
    development: you may add fields/exports, never rename or change existing shapes.
+8. **Rendering is a view.** `src/render3d` converts sim state through `coords.ts` (x east, y north,
+   z up → three.js Y-up; tested) and draws it; the road mesh uses the sim's own road plane so what
+   you see is what the tyres touch. No physics lives in the renderer. three.js is the only runtime
+   dependency and stays out of `src/sim` and `src/design`.
 
 ## Simulation loop (per vehicle, per fixed step)
 

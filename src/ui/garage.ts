@@ -1,22 +1,41 @@
 /**
- * GARAGE screen (#/garage): car list · build editor · live analysis.
+ * GARAGE screen (#/garage): car list · [showroom | charts] · tabbed build editor · analysis.
+ *
+ * Layout (main column): the 3D showroom top-left, one or two charts for the active tab top-right,
+ * and the configuration below split into tabs (chassis · engine · drivetrain · tyres · suspension ·
+ * brakes · aero). Each tab's charts plot the physics that tab's knobs change (src/ui/charts.ts).
+ * The right column keeps the analysis: summary, metrics, balance bars, auto-tune and warnings.
  *
  * Every change runs normalizeBuild → compileBuild → analyzeBuild (< 5 ms) and refreshes the
- * right panel, the two charts and the warnings. Editing a preset forks it into a player car.
+ * analysis, the active charts and the showroom. Editing a preset forks it into a player car.
+ * Display units come from src/ui/units.ts; the build stays SI.
  */
 import { analyzeBuild } from '../design/analyze';
 import { autoTune, type AutoTuneResult } from '../design/autotune';
 import { compileBuild, normalizeBuild } from '../design/compile';
 import { FIELD_RANGES } from '../design/parts';
 import type { AutoTuneTarget, BuildAnalysis, BuildWarning, CarBuild, HandlingIntent } from '../design/types';
+import { Showroom } from '../render3d/showroom';
 import { estimateLapTime } from '../sim/ai';
 import type { VehicleSpec } from '../sim/types';
-import { drawEngineChart, drawGearChart } from './charts';
+import {
+  drawAeroChart,
+  drawBiasChart,
+  drawBrakeTempChart,
+  drawCornerWeightsChart,
+  drawEngineChart,
+  drawGearChart,
+  drawLoadTransferChart,
+  drawSuspensionBars,
+  drawTyreLoadChart,
+  drawTyreTempChart,
+} from './charts';
 import { append, clear, h, modal, Text, toast, type Child } from './dom';
-import { fieldLabel, GEAR_SHAPE_PATHS, getPath, SECTIONS, setPath, type FieldDesc, type SectionDesc } from './fields';
-import { fmt, fmtInt, fmtLap, fmtStep, humanizePath, pct } from './format';
+import { fieldLabel, GEAR_SHAPE_PATHS, getPath, SECTIONS, setPath, TABS, type FieldDesc, type SectionDesc, type TabDesc } from './fields';
+import { fmt, fmtLap, fmtStep, humanizePath, pct } from './format';
 import { ROUTES, type Nav, type Screen } from './screen';
 import { newCarId, type Session } from './state';
+import { fieldUnits, fq, isImperial, localizeText, U } from './units';
 
 interface Control {
   refresh(): void;
@@ -35,6 +54,40 @@ const INTENTS: Array<{ value: HandlingIntent; label: string; hint: string }> = [
   { value: 'lively', label: 'Lively', hint: '+0.2 deg/g: rotates eagerly, needs quick hands.' },
   { value: 'drift', label: 'Drift', hint: '−1.0 deg/g oversteer and a rear that locks with the front: made to slide.' },
 ];
+
+interface ChartDesc {
+  title: string;
+  draw: (canvas: HTMLCanvasElement, spec: VehicleSpec, analysis: BuildAnalysis | null) => void;
+}
+
+/** Charts per tab — each one plots the terms that tab's knobs change. */
+const TAB_CHARTS: Record<string, ChartDesc[]> = {
+  chassis: [
+    { title: 'Static corner weights, CG height and rollover threshold', draw: drawCornerWeightsChart },
+    { title: 'Wheel loads vs lateral g (load transfer; an inner wheel lifts where its line hits zero)', draw: drawLoadTransferChart },
+  ],
+  engine: [{ title: 'Engine: torque and power vs rpm', draw: (c, s) => drawEngineChart(c, s) }],
+  drivetrain: [
+    { title: 'Wheel force per gear vs speed, with drag + rolling resistance and the traction line', draw: (c, s) => drawGearChart(c, s) },
+    { title: 'Engine: torque and power vs rpm', draw: (c, s) => drawEngineChart(c, s) },
+  ],
+  tyres: [
+    { title: 'Grip vs tyre temperature: the window, the cold (glassy) and hot (greasy) floors', draw: (c, s) => drawTyreTempChart(c, s) },
+    { title: 'Lateral grip vs wheel load (warm tyre): optimal load and the static corner loads', draw: (c, s) => drawTyreLoadChart(c, s) },
+  ],
+  suspension: [
+    { title: 'Wheel loads vs lateral g: how springs, bars and roll centres split the transfer', draw: drawLoadTransferChart },
+    { title: 'Ride frequencies and the roll-stiffness share vs the weight share', draw: (c, s) => drawSuspensionBars(c, s) },
+  ],
+  brakes: [
+    { title: 'Pad bite vs disc temperature (fade band) with the temperature after ten stops', draw: drawBrakeTempChart },
+    { title: 'Deceleration at first lockup vs brake bias', draw: (c, s) => drawBiasChart(c, s) },
+  ],
+  aero: [{ title: 'Drag and downforce vs speed', draw: drawAeroChart }],
+};
+
+/** The tab survives car switches, re-mounts and unit changes within the session. */
+let activeTab = TABS[0].id;
 
 export function mountGarage(root: HTMLElement, session: Session, nav: Nav): Screen {
   const g = new GarageScreen(root, session, nav);
@@ -58,10 +111,15 @@ class GarageScreen {
   private readonly carList = h('ul', { class: 'car-list' });
   private readonly presetList = h('ul', { class: 'car-list' });
   private readonly editorHead = h('div', { class: 'editor-head' });
+  private readonly showroomCanvas = h('canvas', { class: 'showroom', 'aria-label': '3D preview of the car (drag to orbit, wheel to zoom)' });
+  private showroom: Showroom | null = null;
+  private readonly chartsWrap = h('div', { class: 'charts-wrap' });
+  private chartCanvases: Array<{ canvas: HTMLCanvasElement; desc: ChartDesc }> = [];
+  private readonly tabBar = h('div', { class: 'tabs', role: 'tablist' });
+  private tabButtons = new Map<string, HTMLElement>();
+  private tabPanes = new Map<string, HTMLElement>();
   private readonly editorBody = h('div', { class: 'editor-body' });
   private readonly analysisEl = h('aside', { class: 'garage-analysis' });
-  private readonly engineCanvas = h('canvas', { class: 'chart', 'aria-label': 'Engine torque and power vs rpm' });
-  private readonly gearCanvas = h('canvas', { class: 'chart', 'aria-label': 'Wheel force per gear vs speed' });
   private readonly summaryText = new Text('p', 'summary');
   private readonly warningsEl = h('div', { class: 'warnings' });
   private readonly metricsEl = h('div', { class: 'metrics' });
@@ -102,13 +160,27 @@ class GarageScreen {
         this.presetList,
         h('p', { class: 'muted small' }, 'Presets are read-only: editing one saves a copy to your cars.'),
       ),
-      h('section', { class: 'garage-editor' }, this.editorHead, this.editorBody),
+      h(
+        'section',
+        { class: 'garage-editor' },
+        this.editorHead,
+        h('div', { class: 'garage-top' }, h('div', { class: 'showroom-wrap' }, this.showroomCanvas), this.chartsWrap),
+        this.tabBar,
+        this.editorBody,
+      ),
       this.analysisEl,
     );
     this.buildAnalysisPanel();
     root.appendChild(this.el);
     this.renderLists();
     this.renderEditor();
+    try {
+      this.showroom = new Showroom(this.showroomCanvas);
+    } catch (err) {
+      // no WebGL: the garage works without the preview
+      console.warn('showroom unavailable:', err);
+      this.showroomCanvas.hidden = true;
+    }
     this.recompute();
     window.addEventListener('resize', this.onResize);
     document.addEventListener('keydown', this.onKey);
@@ -117,6 +189,10 @@ class GarageScreen {
   unmount(): void {
     window.removeEventListener('resize', this.onResize);
     document.removeEventListener('keydown', this.onKey);
+    if (this.showroom) {
+      this.showroom.dispose();
+      this.showroom = null;
+    }
     if (this.estimateTimer) {
       window.clearTimeout(this.estimateTimer);
       this.estimateTimer = 0;
@@ -346,21 +422,59 @@ class GarageScreen {
   private renderEditor(): void {
     this.renderHead();
     clear(this.editorBody);
+    clear(this.tabBar);
     this.editorBody.classList.toggle('no-hints', !this.showHints);
     this.controls = [];
-    for (const section of SECTIONS) this.editorBody.appendChild(this.renderSection(section));
+    this.tabButtons.clear();
+    this.tabPanes.clear();
+    for (const tab of TABS) {
+      const btn = h(
+        'button',
+        { class: 'tab', type: 'button', role: 'tab', dataset: { tab: tab.id }, onclick: () => this.setTab(tab.id) },
+        tab.title,
+        h('span', { class: 'section-flag', dataset: { flag: tab.area } }),
+      );
+      this.tabButtons.set(tab.id, btn);
+      this.tabBar.appendChild(btn);
+      const pane = h('div', { class: 'tab-pane', role: 'tabpanel', dataset: { tab: tab.id }, hidden: true });
+      for (const sid of tab.sections) {
+        const section = SECTIONS.find((s) => s.id === sid);
+        if (section) pane.appendChild(this.renderSection(section, tab));
+      }
+      this.tabPanes.set(tab.id, pane);
+      this.editorBody.appendChild(pane);
+    }
+    this.setTab(this.tabPanes.has(activeTab) ? activeTab : TABS[0].id);
   }
 
-  private renderSection(section: SectionDesc): HTMLElement {
+  private setTab(id: string): void {
+    activeTab = id;
+    for (const [tid, btn] of this.tabButtons) {
+      const on = tid === id;
+      btn.classList.toggle('active', on);
+      btn.setAttribute('aria-selected', String(on));
+    }
+    for (const [tid, pane] of this.tabPanes) pane.hidden = tid !== id;
+    // charts for this tab
+    clear(this.chartsWrap);
+    this.chartCanvases = [];
+    const charts = TAB_CHARTS[id] ?? [];
+    this.chartsWrap.classList.toggle('single', charts.length === 1);
+    for (const desc of charts) {
+      const canvas = h('canvas', { class: 'chart', 'aria-label': desc.title });
+      this.chartsWrap.append(h('div', { class: 'chart-title' }, desc.title), canvas);
+      this.chartCanvases.push({ canvas, desc });
+    }
+    this.drawCharts();
+  }
+
+  private renderSection(section: SectionDesc, tab: TabDesc): HTMLElement {
     const body = h('div', { class: 'section-body' });
     for (const f of section.fields) body.appendChild(this.renderField(f));
-    const details = h(
-      'details',
-      { class: 'section', open: true, dataset: { area: section.area } },
-      h('summary', { class: 'section-title' }, section.title, h('span', { class: 'section-flag', dataset: { flag: section.area } })),
-      body,
-    );
-    return details;
+    const wrap = h('div', { class: 'section', dataset: { area: section.area, section: section.id } });
+    if (tab.sections.length > 1) wrap.appendChild(h('div', { class: 'section-title' }, section.title));
+    wrap.appendChild(body);
+    return wrap;
   }
 
   private renderField(f: FieldDesc): HTMLElement {
@@ -378,39 +492,41 @@ class GarageScreen {
 
   private rangeField(f: Extract<FieldDesc, { kind: 'range' }>): HTMLElement {
     const r = FIELD_RANGES[f.path];
+    const fu = fieldUnits(r.unit, r.step);
+    // the slider stays in SI (the build's units); the number box shows and accepts display units
     const slider = h('input', { type: 'range', min: r.min, max: r.max, step: r.step, 'aria-label': r.label, dataset: { path: f.path } });
-    const num = h('input', { type: 'number', class: 'num', min: r.min, max: r.max, step: r.step, 'aria-label': `${r.label} value` });
+    const num = h('input', { type: 'number', class: 'num', min: fu.to(r.min).toFixed(fu.decimals), max: fu.to(r.max).toFixed(fu.decimals), step: fu.step, 'aria-label': `${r.label} value` });
     const note = h('div', { class: 'field-note' });
     const wrap = h(
       'div',
       { class: 'field', title: r.hint },
-      h('div', { class: 'field-head' }, h('label', null, r.label), h('span', { class: 'unit' }, r.unit)),
+      h('div', { class: 'field-head' }, h('label', null, r.label), h('span', { class: 'unit' }, fu.unit)),
       h('div', { class: 'field-row' }, slider, num),
-      h('div', { class: 'field-hint' }, r.hint),
+      h('div', { class: 'field-hint' }, localizeText(r.hint)),
       note,
     );
-    const apply = (raw: string): void => {
-      const v = Number(raw);
+    const applySi = (v: number): void => {
       if (!Number.isFinite(v)) return;
       this.edit((b) => setPath(b, f.path, v), f.path);
     };
-    slider.addEventListener('input', () => apply(slider.value));
-    num.addEventListener('change', () => apply(num.value));
+    slider.addEventListener('input', () => applySi(Number(slider.value)));
+    num.addEventListener('change', () => applySi(fu.from(Number(num.value))));
     num.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') apply(num.value);
+      if (e.key === 'Enter') applySi(fu.from(Number(num.value)));
     });
     const ctl: Control = {
       refresh: () => {
         const v = getPath(this.build, f.path);
         const s = typeof v === 'number' ? fmtStep(v, r.step) : '';
         if (slider.value !== s) slider.value = s;
-        if (document.activeElement !== num && num.value !== s) num.value = s;
+        const d = typeof v === 'number' ? fu.to(v).toFixed(fu.decimals) : '';
+        if (document.activeElement !== num && num.value !== d) num.value = d;
         const on = f.enabled ? f.enabled(this.build) : true;
         wrap.classList.toggle('disabled', !on);
         slider.disabled = !on;
         num.disabled = !on;
         const n = f.note ? f.note(this.build) : null;
-        note.textContent = n ?? '';
+        note.textContent = n ? localizeText(n) : '';
         note.hidden = !n;
       },
     };
@@ -429,7 +545,7 @@ class GarageScreen {
       const buttons = f.options.map((o) =>
         h(
           'button',
-          { class: 'seg', type: 'button', title: o.hint ?? '', onclick: () => set(o.value), dataset: { value: String(o.value) } },
+          { class: 'seg', type: 'button', title: localizeText(o.hint ?? ''), onclick: () => set(o.value), dataset: { value: String(o.value) } },
           o.label,
         ),
       );
@@ -445,7 +561,7 @@ class GarageScreen {
           const o = f.options.find((x) => String(x.value) === sel.value);
           if (o) set(o.value);
         } },
-        f.options.map((o) => h('option', { value: String(o.value), title: o.hint ?? '' }, o.label)),
+        f.options.map((o) => h('option', { value: String(o.value), title: localizeText(o.hint ?? '') }, o.label)),
       );
       control = sel;
       refreshControl = () => {
@@ -458,14 +574,14 @@ class GarageScreen {
       { class: 'field', title: f.hint },
       h('div', { class: 'field-head' }, h('label', null, f.label)),
       control,
-      h('div', { class: 'field-hint' }, f.hint),
+      h('div', { class: 'field-hint' }, localizeText(f.hint)),
       optHint.el,
     );
     const ctl: Control = {
       refresh: () => {
         refreshControl();
         const o = f.options.find((x) => String(x.value) === String(current()));
-        optHint.set(o?.hint ?? '');
+        optHint.set(localizeText(o?.hint ?? ''));
         optHint.el.hidden = !o?.hint;
         const on = f.enabled ? f.enabled(this.build) : true;
         wrap.classList.toggle('disabled', !on);
@@ -531,20 +647,21 @@ class GarageScreen {
   // -------------------------------------------------------------- analysis
 
   private buildAnalysisPanel(): void {
+    const imperial = isImperial();
     const m = (key: string, label: string): Metric => {
       const metric = new Metric(label);
       this.metricsEl.appendChild(metric.el);
       return metric;
     };
     this.metrics = {
-      accel: m('accel', '0–100 km/h'),
+      accel: m('accel', imperial ? '0–62 mph' : '0–100 km/h'),
       top: m('top', 'Top speed'),
       mass: m('mass', 'Mass · F/R'),
       skid: m('skid', 'Skidpad'),
-      brake: m('brake', 'Braking 100–0'),
+      brake: m('brake', imperial ? 'Braking 62–0 mph' : 'Braking 100–0'),
       power: m('power', 'Power · torque'),
       temp: m('temp', 'Brakes after 10 stops'),
-      down: m('down', 'Downforce @200'),
+      down: m('down', `Downforce @${Math.round(U.speedKmh(200).value)}`),
       jump: m('jump', 'Jump landing'),
       lap: m('lap', 'Estimated lap'),
     };
@@ -583,10 +700,6 @@ class GarageScreen {
         h('div', { class: 'metric-label' }, 'Aero balance (orange) vs weight balance (white) ', this.aeroValue.el),
         aeroBar,
       ),
-      h('div', { class: 'chart-title' }, 'Engine: torque (Nm) and power (kW) vs rpm'),
-      this.engineCanvas,
-      h('div', { class: 'chart-title' }, 'Wheel force per gear vs speed, with drag and traction'),
-      this.gearCanvas,
       h(
         'div',
         { class: 'autotune-row' },
@@ -604,6 +717,7 @@ class GarageScreen {
     this.analysis = analyzeBuild(this.build, this.spec);
     this.renderAnalysis();
     this.drawCharts();
+    this.showroom?.setSpec(this.spec);
     debugHook.analysis = this.analysis;
     debugHook.build = this.build;
     this.scheduleEstimate();
@@ -641,25 +755,30 @@ class GarageScreen {
 
   private drawCharts(): void {
     if (!this.spec) return;
-    drawEngineChart(this.engineCanvas, this.spec);
-    drawGearChart(this.gearCanvas, this.spec);
+    for (const { canvas, desc } of this.chartCanvases) {
+      try {
+        desc.draw(canvas, this.spec, this.analysis ?? null);
+      } catch (err) {
+        console.warn(`chart "${desc.title}" failed:`, err);
+      }
+    }
   }
 
   private renderAnalysis(): void {
     const a = this.analysis;
     const m = a.metrics;
     const spec = this.spec;
-    this.summaryText.set(a.summary);
+    this.summaryText.set(localizeText(a.summary));
 
     this.metrics.accel.set(`${fmt(m.accel0to100s, 1)} s`, `traction use in 1st ${fmt(m.tractionUse1stGear, 2)}×`);
     this.metrics.top.set(
-      `${fmtInt(m.topSpeedKmh)} km/h`,
+      fq(U.speedKmh(m.topSpeedKmh)),
       m.topSpeedGearingLimited
-        ? `on the limiter — drag would allow ${fmtInt(m.topSpeedDragLimitedKmh ?? 0)}`
-        : `drag-limited (ideal ${fmtInt(m.topSpeedDragLimitedKmh ?? m.topSpeedKmh)})`,
+        ? `on the limiter — drag would allow ${fq(U.speedKmh(m.topSpeedDragLimitedKmh ?? 0))}`
+        : `drag-limited (ideal ${fq(U.speedKmh(m.topSpeedDragLimitedKmh ?? m.topSpeedKmh))})`,
       m.topSpeedGearingLimited ? 'warn' : '',
     );
-    this.metrics.mass.set(`${fmtInt(m.massKg)} kg`, `${pct(m.frontWeightFraction)} front · ${pct(1 - m.frontWeightFraction)} rear`);
+    this.metrics.mass.set(fq(U.mass(m.massKg)), `${pct(m.frontWeightFraction)} front · ${pct(1 - m.frontWeightFraction)} rear`);
     // Skidpad with the rollover threshold next to it: warning colour once the car corners within
     // 90 % of the g it tips at. Every metric past the frozen core set is optional.
     const roll = m.rolloverG;
@@ -679,17 +798,17 @@ class GarageScreen {
     );
     const lock = m.lockupAxle;
     this.metrics.brake.set(
-      `${fmt(m.brakingDistance100m, 1)} m`,
+      fq(U.dist(m.brakingDistance100m), 1),
       `${fmt(m.lockupG, 2)} g before lockup`,
       lock === 'rear' ? 'danger' : lock === 'front' ? 'warn' : 'ok',
       lock === 'balanced' ? 'balanced' : `${lock} locks first`,
     );
-    this.metrics.power.set(`${fmtInt(m.peakPowerKw)} kW`, `${fmtInt(m.peakTorqueNm)} Nm · ${fmtInt(m.powerToWeightWkg)} W/kg`);
+    this.metrics.power.set(fq(U.power(m.peakPowerKw * 1000)), `${fq(U.torque(m.peakTorqueNm))} · ${fq(U.powerToWeight(m.powerToWeightWkg))}`);
     const hot = m.brakeHotAxle ?? 'front';
     const pad = hot === 'front' ? spec.brakes.front : spec.brakes.rear;
     const tempCls = m.brakeTempAfterStopsC > pad.fadeEndTemp ? 'danger' : m.brakeTempAfterStopsC > pad.fadeStartTemp ? 'warn' : 'ok';
-    this.metrics.temp.set(`${fmtInt(m.brakeTempAfterStopsC)} °C`, `${hot} discs · pads fade from ${fmtInt(pad.fadeStartTemp)} °C`, tempCls);
-    this.metrics.down.set(`${fmtInt(m.downforce200N)} N`, `${pct(m.aeroBalanceFront)} of it on the front`);
+    this.metrics.temp.set(fq(U.temp(m.brakeTempAfterStopsC)), `${hot} discs · pads fade from ${fq(U.temp(pad.fadeStartTemp))}`, tempCls);
+    this.metrics.down.set(fq(U.force(m.downforce200N)), `${pct(m.aeroBalanceFront)} of it on the front`);
 
     // understeer bar: −4 … +4 deg/g
     const us = m.understeerGradientDegPerG;
@@ -714,15 +833,15 @@ class GarageScreen {
           'div',
           { class: `warning ${w.severity}`, dataset: { area: w.area } },
           h('span', { class: 'sev' }, w.severity),
-          h('div', { class: 'warning-body' }, h('div', { class: 'warning-area' }, w.area), w.message),
+          h('div', { class: 'warning-body' }, h('div', { class: 'warning-area' }, w.area), localizeText(w.message)),
           w.fix ? h('button', { class: 'btn btn-small', onclick: () => this.autoFix(w.fix as AutoTuneTarget) }, 'Auto-fix') : null,
         ),
       );
     }
-    // section flags (count of warnings per area)
+    // tab flags (worst warning per area)
     const counts: Partial<Record<BuildWarning['area'], BuildWarning['severity']>> = {};
     for (const w of sorted) if (!counts[w.area]) counts[w.area] = w.severity;
-    for (const flag of this.editorBody.querySelectorAll<HTMLElement>('.section-flag')) {
+    for (const flag of this.tabBar.querySelectorAll<HTMLElement>('.section-flag')) {
       const area = flag.dataset.flag as BuildWarning['area'];
       const sev = counts[area];
       flag.className = `section-flag${sev ? ` ${sev}` : ''}`;
@@ -792,10 +911,14 @@ class Metric {
   }
 }
 
+/** A field value in display units ("225 mm" / "8.86 in"). */
 function fmtValue(v: number | string, field: string): string {
   if (typeof v === 'string') return v;
   const r = FIELD_RANGES[field];
-  return r ? `${fmtStep(v, r.step)}${r.unit ? ` ${r.unit}` : ''}` : String(v);
+  if (!r) return String(v);
+  const fu = fieldUnits(r.unit, r.step);
+  const shown = fu.to(v).toFixed(fu.decimals);
+  return `${fu.unit ? `${shown} ${fu.unit}` : fmtStep(v, r.step)}`;
 }
 
 function changeList(res: AutoTuneResult): Child {
@@ -807,7 +930,7 @@ function changeList(res: AutoTuneResult): Child {
         'li',
         null,
         h('div', { class: 'change-head' }, h('b', null, FIELD_RANGES[c.field]?.label ?? humanizePath(c.field)), ' ', h('span', { class: 'mono' }, fmtValue(c.from, c.field)), ' → ', h('span', { class: 'mono accent' }, fmtValue(c.to, c.field))),
-        h('div', { class: 'change-why' }, c.why),
+        h('div', { class: 'change-why' }, localizeText(c.why)),
       ),
     ),
   );
@@ -819,3 +942,6 @@ export const debugHook: { analysis: BuildAnalysis | null; build: CarBuild | null
   build: null,
   lapEstimate: null,
 };
+
+/** Exposed for the smoke tests: which tab shows which chart titles. */
+export const TAB_CHART_TITLES: Record<string, string[]> = Object.fromEntries(Object.entries(TAB_CHARTS).map(([k, v]) => [k, v.map((c) => c.title)]));

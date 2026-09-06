@@ -4,3 +4,6 @@ dist
 *.log
 scratch/
 tests/_*_scratch.ts
+
+dist-electron
+release

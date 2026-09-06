@@ -6,10 +6,14 @@
 import { describe, expect, it } from 'vitest';
 import { FIELD_RANGES, presetBuilds } from '../src/design/parts';
 import { fieldLabel, getPath, SECTIONS, setPath } from '../src/ui/fields';
-import { isBestFile, isCarBuildLike, isCarsFile, isSetupFile } from '../src/ui/storage';
+import { isBestFile, isCarBuildLike, isCarsFile, isSetupFile, KEYS, loadJson, saveJson, setStorageBackend, storageKind } from '../src/ui/storage';
 import { buildRaceConfig } from '../src/ui/raceView';
-import { Session } from '../src/ui/state';
+import { loadUserTracks, Session } from '../src/ui/state';
+import { BUILTIN_TRACKS } from '../src/tracks/index';
 import { fmtDelta, fmtLap, fmtStep, humanizePath } from '../src/ui/format';
+import { TABS } from '../src/ui/fields';
+import { TAB_CHART_TITLES } from '../src/ui/garage';
+import { detectUnitSystem, fieldUnits, localizeText, setUnitPreference, U, units } from '../src/ui/units';
 
 describe('garage field descriptors', () => {
   it('cover every continuous FIELD_RANGES path exactly once', () => {
@@ -49,6 +53,67 @@ describe('garage field descriptors', () => {
   });
 });
 
+describe('garage tabs', () => {
+  it('every section belongs to exactly one tab and every tab has at least one chart', () => {
+    const seen = new Map<string, number>();
+    for (const t of TABS) for (const sid of t.sections) seen.set(sid, (seen.get(sid) ?? 0) + 1);
+    for (const s of SECTIONS) expect(seen.get(s.id), `section ${s.id} not in a tab`).toBe(1);
+    expect(seen.size).toBe(SECTIONS.length);
+    for (const t of TABS) {
+      expect(TAB_CHART_TITLES[t.id]?.length ?? 0, `tab ${t.id} has no chart`).toBeGreaterThan(0);
+      const areas = new Set(t.sections.map((sid) => SECTIONS.find((s) => s.id === sid)!.area));
+      expect(areas.size, `tab ${t.id} mixes warning areas`).toBe(1);
+      expect([...areas][0]).toBe(t.area);
+    }
+  });
+});
+
+describe('display units', () => {
+  it('auto-detects imperial for US locales only', () => {
+    expect(detectUnitSystem('en-US')).toBe('imperial');
+    expect(detectUnitSystem('en_us')).toBe('imperial');
+    expect(detectUnitSystem('es-US')).toBe('imperial');
+    expect(detectUnitSystem('en-GB')).toBe('metric');
+    expect(detectUnitSystem('de')).toBe('metric');
+    expect(detectUnitSystem('my-MM')).toBe('imperial');
+    expect(detectUnitSystem('')).toBe('metric');
+    // no argument → the runtime's own locale (Node reports navigator.language too)
+    expect(['metric', 'imperial']).toContain(detectUnitSystem());
+  });
+
+  it('converts at the display boundary and back for the garage fields', () => {
+    setUnitPreference('imperial');
+    try {
+      expect(units()).toBe('imperial');
+      expect(U.speed(10).value).toBeCloseTo(22.369, 2);
+      expect(U.speed(10).unit).toBe('mph');
+      expect(U.temp(100).value).toBeCloseTo(212, 9);
+      expect(U.mass(1000).value).toBeCloseTo(2204.6, 1);
+      expect(U.pressure(220).value).toBeCloseTo(31.9, 1);
+      expect(U.torque(100).value).toBeCloseTo(73.76, 2);
+      expect(U.power(74570).value).toBeCloseTo(100, 1);
+      expect(U.dist(100).unit).toBe('ft');
+      const mm = fieldUnits('mm', 10);
+      expect(mm.unit).toBe('in');
+      expect(mm.from(mm.to(225))).toBeCloseTo(225, 9);
+      const kpa = fieldUnits('kPa', 5);
+      expect(kpa.from(kpa.to(220))).toBeCloseTo(220, 9);
+      const rate = fieldUnits('N/mm', 1);
+      expect(rate.unit).toBe('lb/in');
+      expect(rate.to(100)).toBeCloseTo(571, 0);
+      expect(fieldUnits('deg', 0.1).unit).toBe('deg'); // unchanged
+      expect(localizeText('top speed 200 km/h, discs reach 350 °C, 1200 kg, stops in 40 m')).toBe('top speed 124 mph, discs reach 662 °F, 2646 lb, stops in 131 ft');
+      expect(localizeText('0–100 in 4.5 s at 250 kPa')).toBe('0–62 mph in 4.5 s at 36.3 psi');
+    } finally {
+      setUnitPreference('metric');
+    }
+    expect(U.speed(10).unit).toBe('km/h');
+    expect(fieldUnits('mm', 10).unit).toBe('mm');
+    expect(localizeText('200 km/h')).toBe('200 km/h');
+    setUnitPreference('auto');
+  });
+});
+
 describe('storage validators', () => {
   it('accept real builds and reject garbage', () => {
     const cars = presetBuilds();
@@ -63,6 +128,58 @@ describe('storage validators', () => {
     expect(isSetupFile({ format: 1, trackId: 'clubsprint', laps: '3', playerCarId: 'a', opponents: [], aiSkill: 0.8 })).toBe(false);
     expect(isBestFile({ format: 1, best: { 'clubsprint|a': 61.2 } })).toBe(true);
     expect(isBestFile({ format: 1, best: { 'clubsprint|a': -1 } })).toBe(false);
+  });
+});
+
+describe('storage backend (desktop bridge shape)', () => {
+  it('reads and writes through an injected backend and drops invalid saves', () => {
+    const files = new Map<string, string>();
+    setStorageBackend({ get: (k) => files.get(k) ?? null, set: (k, v) => void files.set(k, v), remove: (k) => void files.delete(k) });
+    try {
+      expect(storageKind()).toBe('browser');
+      saveJson(KEYS.best, { format: 1, best: { 'clubsprint|x': 70 } });
+      expect(loadJson(KEYS.best, isBestFile)?.best['clubsprint|x']).toBe(70);
+      files.set(KEYS.best, '{"format":1,"best":{"a":-5}}');
+      expect(loadJson(KEYS.best, isBestFile)).toBeNull();
+      expect(files.has(KEYS.best)).toBe(false); // invalid file removed
+      files.set(KEYS.setup, 'not json');
+      expect(loadJson(KEYS.setup, isSetupFile)).toBeNull();
+      // a Session persists its cars through the same backend
+      const s = new Session();
+      expect(files.has(KEYS.cars)).toBe(true);
+      expect(isCarsFile(JSON.parse(files.get(KEYS.cars)!))).toBe(true);
+      s.setBest('clubsprint', s.selectedCarId, 66);
+      expect(JSON.parse(files.get(KEYS.best)!).best[`clubsprint|${s.selectedCarId}`]).toBe(66);
+    } finally {
+      setStorageBackend(null);
+    }
+    expect(storageKind()).toBe('none');
+  });
+});
+
+describe('user track files (desktop tracks folder)', () => {
+  it('loads valid specs, reports parse/validation errors and rejects duplicate ids', () => {
+    const good = { ...BUILTIN_TRACKS[3], id: 'my-track', name: 'My Track' };
+    const res = loadUserTracks([
+      { file: 'good.json', spec: good },
+      { file: 'broken.json', error: 'Unexpected token' },
+      { file: 'notatrack.json', spec: { hello: 1 } },
+      { file: 'dup.json', spec: { ...good } },
+      { file: 'shadow.json', spec: { ...good, id: BUILTIN_TRACKS[0].id } },
+      { file: 'invalid.json', spec: { ...good, id: 'bad', segments: [{ length: -5 }] } },
+    ]);
+    expect(res.map((r) => r.spec !== null)).toEqual([true, false, false, false, false, false]);
+    expect(res[1].error).toMatch(/Unexpected token/);
+    expect(res[2].error).toMatch(/not a RACERS track/);
+    expect(res[3].error).toMatch(/duplicate/);
+    expect(res[4].error).toMatch(/duplicate/);
+    expect(res[5].error).toMatch(/segment/i);
+    // in the browser the session has no user tracks and only the built-ins
+    const s = new Session();
+    expect(s.userTracks).toEqual([]);
+    expect(s.trackSpecs.length).toBe(BUILTIN_TRACKS.length);
+    expect(s.hasTrack('clubsprint')).toBe(true);
+    expect(s.hasTrack('nope')).toBe(false);
   });
 });
 
